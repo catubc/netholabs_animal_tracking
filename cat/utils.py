@@ -3,8 +3,11 @@ import os
 import glob
 import cv2
 import shutil  # <-- needed for copying
+import yaml
+import parmap
+from datetime import datetime, timezone, timedelta
 
-
+#
 def load_times(fname,
                minute):
     data = np.load(fname, allow_pickle=True)
@@ -35,6 +38,116 @@ def load_times(fname,
 
     return time_stamps_binned
 
+
+# find the filename for each camera that falls in minute #1
+def process_cams(cam_ids,
+                 root_dir,
+                 cage_id,
+                 date,
+                 hour_start,
+                 minute,
+                 parallel_flag=True,
+                 shrink_factor=1,
+                 skip_regeneration=False):
+
+    if parallel_flag==False:
+        for cam in cam_ids:
+            print ("... processing camera: ", cam, " for minute: ", minute)
+            decompress_cams(cam,
+                            root_dir,
+                            cage_id,
+                            date,
+                            hour_start,
+                            minute,
+                            shrink_factor=shrink_factor,
+                            skip_regeneration=skip_regeneration)
+    else:
+        parmap.map(decompress_cams, 
+                   cam_ids,
+                    root_dir,
+                    cage_id,
+                    date,
+                    hour_start,
+                    minute,
+                    shrink_factor=shrink_factor,
+                    skip_regeneration=False,
+                    pm_pbar=True,
+                    pm_processes=4,  # adjust based on your system)
+        )
+
+# 
+def decompress_cams(cam,
+                    root_dir,
+                    cage_id,
+                    date,
+                    hour_start,
+                    minute,
+                    shrink_factor=1,
+                    skip_regeneration=False,
+                    verbose=False      
+
+                    ):
+
+    #################################################
+    ############## Generate Metadata ################
+    #################################################
+    
+    fname_root = os.path.join(root_dir, str(cam), 
+                              str(cage_id) + "_" +
+                              str(cam) + "_" +
+                              date+"_"+str(hour_start)+"_"+str(minute).zfill(2)+"*.npz")
+
+    #print ("fname root: ", fname_root)
+    # find any filenmes that match this pattern
+    # There can only be 0 or 1 videos at most as we save 1 minute video per camera
+    fnames = glob.glob(fname_root)
+
+    # if the camera has files we then need to load the frame times
+    if len(fnames)==0:
+        if verbose:
+            print ('... no files found for camera: ', cam, " minute: ", minute)
+            print ('')
+        return     
+
+    #      
+    if verbose:
+        print ("minute:", minute, " cam:", cam ) #, " files:", fnames)
+
+    # load the time stamps for this camera
+    time_stamps_binned = load_times(fnames[0], minute)
+    if verbose:
+        print ("time stamps binned: ", time_stamps_binned)
+
+    # Convert to UTC+1 using timezone offset
+    dt_naive = datetime.strptime(f"{date.replace('_', '-')} {hour_start}:{minute:02d}", "%Y-%m-%d %H:%M")
+    dt_utc1 = dt_naive.replace(tzinfo=timezone(timedelta(hours=1)))  # UTC+1
+
+    # Get absolute time in nanoseconds
+    timestamp_ns = int(dt_utc1.timestamp() * 1_000_000_000)
+
+    # Truncate to milliseconds
+    unix_time_to_start_of_minute = timestamp_ns // 1_000_000
+    if verbose:
+        print("absolute unix time (ms, UTC+1) to start of minute:", unix_time_to_start_of_minute)
+
+    #################################################
+    ############### Decompress video ################
+    #################################################
+    # process #1
+    fname_video = fnames[0].replace('_metadata.npz', '.h264') 
+    # use opencv to uncomrpess the video to .png files on disk
+    decompress_video(minute,
+                        fname_video,
+                        root_dir,
+                        cam,
+                        time_stamps_binned,
+                        unix_time_to_start_of_minute, 
+                        shrink_factor,
+                        skip_regeneration=skip_regeneration,
+                        overwrite_existing=True)     
+    print ('')
+
+
 #
 def decompress_video(minute, 
                      fname,
@@ -42,12 +155,16 @@ def decompress_video(minute,
                      cam,
                      time_stamps_binned,
                      unix_time_to_start_of_minute,
-                     shrink_factror=1,
-                     overwrite_existing=False):
+                     shrink_factor=1,
+                     skip_regeneration=False,
+                     overwrite_existing=False,
+                     verbose=False):
     
     ''' use OpenCV or something fast to load the video file or uncompress it.
         Not clear yet if we should just save to disk, but probably,
     '''
+
+    verbose = True
     # use opencv to load video
     # and save the png files with the filenmae of 
     
@@ -63,15 +180,25 @@ def decompress_video(minute,
     # was already started previously.
     # 2. If it exists, then we make a copy as .bin and append to it. 
     # 2.1 after finishing appending to it we rename it to .bin and delete the _temp.bin 
-    fname_video_current_minute_clean= os.path.split(fname)[0]+"/minute_" + str(minute) + "_clean.bin"
-    fname_video_current_minute_temp = os.path.split(fname)[0]+"/minute_" + str(minute) + "_temp.bin"
-    fname_video_next_minute_temp = os.path.split(fname)[0]+"/minute_" + str(minute+1) + "_temp.bin"
+    fname_video_current_minute_clean= os.path.split(fname)[0]+"/shrink_"+ str(shrink_factor) \
+                    + "minute_" + str(minute) + "_clean.bin"
+    fname_video_current_minute_temp = os.path.split(fname)[0]+"/shrink_"+ str(shrink_factor) \
+                    + "minute_" + str(minute) + "_temp.bin"
+    fname_video_next_minute_temp = os.path.split(fname)[0]+"/shrink_"+ str(shrink_factor) \
+                    + "minute_" + str(minute+1) + "_temp.bin"
     
+    # check if the clean file already exists
+    if skip_regeneration and os.path.exists(fname_video_current_minute_clean):
+        if verbose:
+            print ("... skipping regeneration of video file: ", fname_video_current_minute_clean)
+        return
+
     # shrink based on the shrink factor
-    if shrink_factror > 1:
-        frame_height //= shrink_factror
-        frame_width  //= shrink_factror
-        print ("shrinking video frames to: ", frame_height, "x", frame_width)
+    if shrink_factor > 1:
+        frame_height //= shrink_factor
+        frame_width  //= shrink_factor
+        if verbose:
+            print ("shrinking video frames to: ", frame_height, "x", frame_width)
     
     # make blank frame 
     frame_size_bytes = frame_height * frame_width * channels
@@ -80,9 +207,10 @@ def decompress_video(minute,
     # we offset the loaded time steps to the start of the current minute
     # so we can then use a 6000 bin fixed size video structure 
     times_relative_to_min_start = time_stamps_binned - unix_time_to_start_of_minute
-    print ("time stamps relative to start of minute: ", times_relative_to_min_start)
-    print (" total frames: ", len(times_relative_to_min_start), 
-           "total unique frames:", np.unique(times_relative_to_min_start).shape[0])
+    if verbose:
+        print ("time stamps relative to start of minute: ", times_relative_to_min_start)
+        print (" total frames: ", len(times_relative_to_min_start), 
+             "total unique frames:", np.unique(times_relative_to_min_start).shape[0])
 
     # Step 1: Check if file exists & count existing frames
     # then we need to indepnt to existin frame to start appending
@@ -94,11 +222,13 @@ def decompress_video(minute,
     # So, first check if there was a temp file saved from the previuos minute
     # this means that we have a good video file to start with - but haven't completed the current minute
     if os.path.exists(fname_video_current_minute_temp):
-        print ("... found temp video file for current minute: ", 
-               fname_video_current_minute_clean)
+        if verbose:
+            print ("... found temp video file for current minute: ", 
+                   fname_video_current_minute_clean)
         file_size = os.path.getsize(fname_video_current_minute_temp)
         frames_already_written = file_size // frame_size_bytes
-        print(f"File already exists: {frames_already_written} frames found.")
+        if verbose:
+            print(f"File already exists: {frames_already_written} frames found.")
 
         # let's make a copy of the temp file to the current minute
         # we can now append to the fname_current_minute as required - and 
@@ -106,12 +236,14 @@ def decompress_video(minute,
 
     else:
         frames_already_written = 0
-        print("File does not exist yet.")
+        if verbose:
+            print("File does not exist yet.")
 
     # need to check that if there is a full video in place already then we can exit safely
     if frames_already_written >= 6000:
-        print ("... this minute of data already fully decompressed, exiting ...")
-        print (" --- THIS CASE SHOULDNT HAPPNE... to check...")
+        if verbose:
+            print ("... this minute of data already fully decompressed, exiting ...")
+            print (" --- THIS CASE SHOULDNT HAPPNE... to check...")
         return
 
     # we need to make sure that the first time stamp is 0
@@ -120,7 +252,8 @@ def decompress_video(minute,
 
     # use open cv to laod video
     import cv2
-    print ("opening video file for reading: ", fname)
+    if verbose:
+        print ("opening video file for reading: ", fname)
     cap = cv2.VideoCapture(fname)
     if not cap.isOpened():
         raise IOError("Cannot open video file: {}".format(fname))
@@ -139,7 +272,8 @@ def decompress_video(minute,
         # if video already in place need to then fill the gap between the previous video ended
         #  and current one; usually about 3-5 seconds of duration during file upload to the server
         if frames_already_written > 0:
-            print ("...  filling up preexisting video with blank frames #: ", frames_already_written)
+            if verbose:
+                print ("...  filling up preexisting video with blank frames #: ", frames_already_written)
             # TODO: fill in video with last frame - so we load it
             while ctr_bin != times_relative_to_min_start[ctr_frame]:
                 # we write on frame to stack and advance 10 ms
@@ -168,10 +302,10 @@ def decompress_video(minute,
             #    print ("processing frame: ", ctr_bin, " / ", 60000, " frames written: ", n_frames_written)
 
             # we subsample/shrink frame based on shrink factor
-            if shrink_factror > 1:
+            if shrink_factor > 1:
                 # let's use simple subsampling
                 if True:
-                    frame = frame[::shrink_factror, ::shrink_factror, :]
+                    frame = frame[::shrink_factor, ::shrink_factor, :]
                 else:
                     #
                     frame = cv2.resize(frame, (frame_width, frame_height), interpolation=cv2.INTER_LINEAR)
@@ -204,12 +338,14 @@ def decompress_video(minute,
 
     # TODO: Need an extra step to indicate clean exit;
     # so we'll need to rename the _temp file to _clean.bin or something like this
-    print ("... clean exit, renaming current minute temp file to clean file ...")
+    if verbose:
+        print ("... clean exit, renaming current minute temp file to clean file ...")
     shutil.move(fname_video_current_minute_temp, fname_video_current_minute_clean)
     
-    print ("# UNIQUE frames written current min", n_unique_frames_written,
-           ", n_frames_read: ", n_frames_read)
-    print ("last frame time written: ", times_relative_to_min_start[ctr_frame], " ctr_frame: ", ctr_frame)
+    if verbose:
+        print ("# UNIQUE frames written current min", n_unique_frames_written,
+            ", n_frames_read: ", n_frames_read)
+        print ("last frame time written: ", times_relative_to_min_start[ctr_frame], " ctr_frame: ", ctr_frame)
 
     #########################################################################
     ################# Extact frames from 2nd minute #########################
@@ -221,7 +357,8 @@ def decompress_video(minute,
         return
 
     times_relative_to_min_start = times_relative_to_min_start[ctr_frame:] - 60000 +10
-    print ("writing second minute frames starting at: ", times_relative_to_min_start[:5])
+    if verbose:
+        print ("writing second minute frames starting at: ", times_relative_to_min_start[:5])
 
        # write the rest of the frames to the next vid
     ctr_bin = 0 
@@ -244,10 +381,10 @@ def decompress_video(minute,
             #    print ("processing frame: ", ctr_bin, " / ", 60000, " frames written: ", n_frames_written)
 
             # apply shrink factor
-            if shrink_factror > 1:
+            if shrink_factor > 1:
                 # let's use simple subsampling
                 if True:
-                    frame = frame[::shrink_factror, ::shrink_factror, :]
+                    frame = frame[::shrink_factor, ::shrink_factor, :]
                 else:
                     #
                     frame = cv2.resize(frame, (frame_width, frame_height), interpolation=cv2.INTER_LINEAR)
@@ -282,7 +419,8 @@ def decompress_video(minute,
             # we also replace the blank frame now with the last read frame
             blank_frame = frame.copy()
 
-    print ("# UNIQUE frames written to next min video", n_unique_frames_written,
+    if verbose:
+        print ("# UNIQUE frames written to next min video", n_unique_frames_written,
               ", n_frames_read: ", n_frames_read)
 
 #
@@ -291,13 +429,73 @@ def make_video(root_dir,
                 n_cams,
                 fname_combined,
                 shrink_factor=1,
-                overwrite_existing = False
+                frame_subsample=1,
+                overwrite_existing = False,
+                delete_bins = False,
                 ):
     
     from tqdm import trange
     ''' make a video from the available frames for this minute '''
-    
-        
+
+    rows = [
+            [16,13,10,7,4,1],
+            [17,14,11,8,5,2],
+            [18,15,12,9,6,3]
+    ]
+
+    rows = np.array(rows)
+
+    # load absolute coordinate table
+    # load translation table
+    fname = "camera_layout.yaml"
+    cam_coordinates = yaml.safe_load(open(fname, 'r'))
+
+    # load translation table
+    fname = os.path.join("translation_table2.yaml")
+    translations = yaml.safe_load(open(fname, 'r'))
+    print ("Translations: ", translations)
+
+    ################################################################
+    # # ok so need to accumulate the x - row-wise translations
+    # trans_cum_x_array = []
+    # for cam in range(1,n_cams+1,1):
+    #     trans = translations['cam'+str(cam)]
+    # # print (trans)
+
+    #     # find the row of the camera
+    #     for ctr, row in enumerate(rows):
+    #         idx = np.where(row==cam)[0]
+    #         print ("row: ", row, "cam: ", cam)
+            
+    #         #
+    #         if idx.shape[0]!=0:
+    #             # now need to sum all the x translations from all the cameras to the left
+    #             temp_x = 0
+    #             for i in range(idx[0]+1):
+    #                 #
+    #                 temp_cam = translations['cam'+str(row[i])]
+    #                 # print ('cam'+str(row[i]) + ", adding shift: ", temp_cam)
+    #                 temp_x+= temp_cam[0]
+                
+    #         #
+    #             #print ("total shift for cam: ", cam, "is ", temp_x)
+    #             #print (cam_coordinates['cam'+str(row[i])])
+    #             temp_x+=cam_coordinates['cam'+str(cam)][0]
+    #             #print ("final location cam: ", cam, "is ", temp_x)
+    #             print ("found row: ", ctr, 
+    #                    ", and column: ", idx,
+    #                    ", start_x: ", temp_x)
+                
+    #             break
+
+    #     # 
+    #     trans_cum_x_array.append(temp_x)
+
+    #
+
+    #
+    #################################################################
+    #    
     frame_height = 720        # pixels
     frame_width = 1280       # pixels
     channels = 3               # RGB
@@ -305,6 +503,9 @@ def make_video(root_dir,
         frame_height //= shrink_factor
         frame_width  //= shrink_factor
         print ("shrinking video frames to: ", frame_height, "x", frame_width)
+
+    # make a blank defulat image
+    blank_img = np.zeros((frame_height, frame_width))
 
     #
     frame_size_bytes = frame_height * frame_width * channels  # 1024 * 768 * 3 = 2,359,296 bytes
@@ -321,21 +522,20 @@ def make_video(root_dir,
     out = cv2.VideoWriter(fname_combined, fourcc, 30.0, (frame_width * cols, frame_height * rows))
 
     # we actually want to grab freeze frames from non-recorded cameras - so we don't reinitialize this
-    for i in trange(6000):
+    for i in trange(0,6000, frame_subsample):
     
         # loop over cameras and grab a frame from each
         for cam in range(1,n_cams+1,1):
             # find the filename for this camera and bin
             fname_frame = os.path.join(root_dir,
                                     str(cam),
+                                    "shrink_" + str(shrink_factor) +
                                     "minute_"+
                                     str(minute) + "_clean.bin")
             
             #
             if os.path.exists(fname_frame):
-                # 
-                print ("making video with camera")
-
+                
                 # we need to index into this file to the current frame i using framesize-bytes
                 with open(fname_frame, 'rb') as f:
                     f.seek(i * frame_size_bytes)
@@ -357,30 +557,48 @@ def make_video(root_dir,
                         print ("fname: ", fname_frame)
                         print ("frame_size_bytes: ", frame_size_bytes)
 
+                ###########################################
+                ######### apply translation ###############
+                ###########################################
                 # 
-                # adding frame from camera:  2  to row:  2  col:  0  at position:  144 216 0 128
-                # adding frame from camera:  3  to row:  0  col:  0  at position:  0 72 0 128
-                                
+                trans = translations['cam'+str(cam)]
+                trans_cum_x = int(trans_cum_x_array[cam-1])
+                trans_cum_y = 0 # temporary for now
+                
+                # trans = translations['cam'+str(cam)]
+                # convert the translation to shrink factor
+                if shrink_factor > 1:
+                    trans_cum_x = trans_cum_x // shrink_factor
+                    trans_cum_y = trans_cum_y // shrink_factor
+                else:
+                    #x = trans_cum_x
+                    trans_cum_y = trans[1]
+
+
+                frame_translated = frame
+
                 col = 5 - ((cam - 1) // 3)  # 6 total columns → index 0..5 reversed
                 row = (cam - 1) % 3  # 0=top, 1=middle, 2=bottom in OpenCV coords
 
-                r0 = row * frame_height
-                r1 = r0 + frame_height
-                c0 = col * frame_width
-                c1 = c0 + frame_width
+                #
+                r0 = row * frame_height + trans_cum_y
+                r1 = r0 + frame_height + trans_cum_y
+                c0 = trans_cum_x
+                c1 = c0 + frame_width 
 
-                frame_all_cams_blank[r0:r1, c0:c1, :] = frame
-
+                # #
 
                 #
-        #         print ("adding frame from camera: ", cam, 
-        #                " to row: ", row, " col: ", col, 
-        #                " at position: ", r0, r1, c0, c1)
+                frame_all_cams_blank[r0:r1, c0:c1, :] = frame_translated
 
-        # return
-            
         # now write the combined frame to the video file
         out.write(frame_all_cams_blank)
+
+        # also save the img to disk
+        if False:
+            fname = os.path.join(root_dir, "frames", "frame_" + str(minute).zfill(2) + "_" + str(i).zfill(4) + ".png")
+            cv2.imwrite(fname, frame_all_cams_blank)
+
     # this is probably coming at the end. not sure exactly
     out.release()
     print ('finished writing combined video file: ', fname_combined)
