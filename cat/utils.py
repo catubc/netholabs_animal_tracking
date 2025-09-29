@@ -423,6 +423,48 @@ def decompress_video(minute,
         print ("# UNIQUE frames written to next min video", n_unique_frames_written,
               ", n_frames_read: ", n_frames_read)
 
+
+
+# function to get width, height from crop
+def get_size(crop):
+    x0, x1, y0, y1 = crop
+    return x1 - x0, y1 - y0
+
+def get_video_size(nrows, 
+                    ncols,
+                    rows,
+                    crops):
+    
+    ''' get the final video size based on the crop table and the rows/cols of cameras '''
+    # compute row widths and col heights
+    row_heights = []
+    for r in range(nrows):
+        heights = []
+        for c in range(ncols):
+            cam_id = rows[r, c]
+            crop = crops[f"cam{cam_id}"]
+            w, h = get_size(crop)
+            heights.append(h)
+        row_heights.append(max(heights))  # height is uniform per row
+
+    col_widths = []
+    for c in range(ncols):
+        widths = []
+        for r in range(nrows):
+            cam_id = rows[r, c]
+            crop = crops[f"cam{cam_id}"]
+            w, h = get_size(crop)
+            widths.append(w)
+        col_widths.append(max(widths))  # width is uniform per column
+
+    # final frame size
+    final_width = sum(col_widths)
+    final_height = sum(row_heights)
+
+    print(f"Final video size: {final_width} x {final_height}")
+    return final_width, final_height
+
+
 #
 def make_video(root_dir,
                 minute,
@@ -437,61 +479,39 @@ def make_video(root_dir,
     from tqdm import trange
     ''' make a video from the available frames for this minute '''
 
-    rows = [
-            [16,13,10,7,4,1],
-            [17,14,11,8,5,2],
-            [18,15,12,9,6,3]
-    ]
-
-    rows = np.array(rows)
-
-    # load absolute coordinate table
-    # load translation table
-    fname = "camera_layout.yaml"
-    cam_coordinates = yaml.safe_load(open(fname, 'r'))
-
-    # load translation table
-    fname = os.path.join("translation_table2.yaml")
-    translations = yaml.safe_load(open(fname, 'r'))
-    print ("Translations: ", translations)
-
-    ################################################################
-    # # ok so need to accumulate the x - row-wise translations
-    # trans_cum_x_array = []
-    # for cam in range(1,n_cams+1,1):
-    #     trans = translations['cam'+str(cam)]
-    # # print (trans)
-
-    #     # find the row of the camera
-    #     for ctr, row in enumerate(rows):
-    #         idx = np.where(row==cam)[0]
-    #         print ("row: ", row, "cam: ", cam)
-            
-    #         #
-    #         if idx.shape[0]!=0:
-    #             # now need to sum all the x translations from all the cameras to the left
-    #             temp_x = 0
-    #             for i in range(idx[0]+1):
-    #                 #
-    #                 temp_cam = translations['cam'+str(row[i])]
-    #                 # print ('cam'+str(row[i]) + ", adding shift: ", temp_cam)
-    #                 temp_x+= temp_cam[0]
-                
-    #         #
-    #             #print ("total shift for cam: ", cam, "is ", temp_x)
-    #             #print (cam_coordinates['cam'+str(row[i])])
-    #             temp_x+=cam_coordinates['cam'+str(cam)][0]
-    #             #print ("final location cam: ", cam, "is ", temp_x)
-    #             print ("found row: ", ctr, 
-    #                    ", and column: ", idx,
-    #                    ", start_x: ", temp_x)
-                
-    #             break
-
-    #     # 
-    #     trans_cum_x_array.append(temp_x)
+    rows = np.array([
+        [16, 13, 10, 7, 4, 1],
+        [17, 14, 11, 8, 5, 2],
+        [18, 15, 12, 9, 6, 3]
+    ])
+    nrows, ncols = 3, 6
 
     #
+    frame_ids_align = np.array([1360,
+                                1460,
+                                1760,
+                                3130,
+                                4160,
+                                5060,
+                                ])
+
+    # load translation table
+    fname_crop_table ="crop_table.yaml"
+    crops = yaml.safe_load(open(fname_crop_table, 'r'))
+    print ("crop table: ", crops)
+    #crop table:  {'cam1': [150, 1280, 0, 720], 'cam2': [150, 1280, 0, 720], 'cam3': [150, 1280, 0, 720], 'cam4': [100, 1180, 0, 720], 'cam5': [100, 1180, 0, 720], 'cam6': [100, 1180, 0, 720], 'cam7': [100, 1180, 0, 720], 'cam8': [100, 1180, 0, 720], 'cam9': [100, 1180, 0, 720], 'cam10': [100, 1180, 0, 720], 'cam11': [100, 1180, 0, 720], 'cam12': [100, 1180, 0, 720], 'cam13': [100, 1180, 0, 720], 'cam14': [100, 1180, 0, 720], 'cam15': [100, 1180, 0, 720], 'cam16': [0, 1180, 0, 720], 'cam17': [0, 1180, 0, 720], 'cam18': [0, 1180, 0, 720]}
+
+    # ok need to figure out the fully frame size based on these crops and the rows that they will be appended above
+
+    vid_width, vid_height = get_video_size(nrows, 
+                                                ncols,
+                                                rows,
+                                                crops)
+    
+    if (shrink_factor > 1):
+        vid_width //= shrink_factor
+        vid_height //= shrink_factor
+        print ("shrinking final video to: ", vid_width, "x", vid_height)
 
     #
     #################################################################
@@ -504,28 +524,36 @@ def make_video(root_dir,
         frame_width  //= shrink_factor
         print ("shrinking video frames to: ", frame_height, "x", frame_width)
 
-    # make a blank defulat image
-    blank_img = np.zeros((frame_height, frame_width))
+    # make a blank default image
+    frame_blank = np.zeros((frame_height, frame_width, channels), dtype=np.uint8)
 
     #
-    frame_size_bytes = frame_height * frame_width * channels  # 1024 * 768 * 3 = 2,359,296 bytes
+    frame_size_bytes = frame_height * frame_width * channels  # 1280 * 768 * 3 = 2,359,296 bytes
 
     if os.path.exists(fname_combined) and overwrite_existing==False:
         print ("... combined video file already exists: ", fname_combined)
         return
 
-    rows, cols = 3, 6
-    frame_all_cams_blank = np.zeros((frame_height * rows, frame_width * cols, channels), dtype=np.uint8)
-
+    #frame_all_cams_blank = np.zeros((frame_height * rows, frame_width * cols, channels), dtype=np.uint8)
+    #
     print ("creating combined video file: ", fname_combined)
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter(fname_combined, fourcc, 30.0, (frame_width * cols, frame_height * rows))
+    out = cv2.VideoWriter(fname_combined, 
+                          fourcc, 
+                          30.0, 
+                          #
+                          (vid_width, vid_height)
+                          #(frame_width * ncols, frame_height * nrows)
+                          )
 
     # we actually want to grab freeze frames from non-recorded cameras - so we don't reinitialize this
     for i in trange(0,6000, frame_subsample):
+        #
+        frame_all_cams_rows = [[],[],[]]
+
     
         # loop over cameras and grab a frame from each
-        for cam in range(1,n_cams+1,1):
+        for cam in range(n_cams,0,-1):
             # find the filename for this camera and bin
             fname_frame = os.path.join(root_dir,
                                     str(cam),
@@ -556,46 +584,70 @@ def make_video(root_dir,
                         print ("cam: ", cam)
                         print ("fname: ", fname_frame)
                         print ("frame_size_bytes: ", frame_size_bytes)
+            else:
+                frame = frame_blank.copy()
 
-                ###########################################
-                ######### apply translation ###############
-                ###########################################
-                # 
-                trans = translations['cam'+str(cam)]
-                trans_cum_x = int(trans_cum_x_array[cam-1])
-                trans_cum_y = 0 # temporary for now
-                
-                # trans = translations['cam'+str(cam)]
-                # convert the translation to shrink factor
-                if shrink_factor > 1:
-                    trans_cum_x = trans_cum_x // shrink_factor
-                    trans_cum_y = trans_cum_y // shrink_factor
-                else:
-                    #x = trans_cum_x
-                    trans_cum_y = trans[1]
+            #
+            #print ("frame shape: ", frame.shape)
+            # find row of the camera
+            result = np.where(rows == cam)
+            #print ("result", result)
+            row_index = result[0][0] 
+            #print ("row: ", row_index)
+
+            # we want to save each of these frames as png for offling analysis
+            if i in frame_ids_align:
+                fname_out = os.path.join(root_dir, "frames",
+                                        "align_frame_" + str(minute).zfill(2) + "_" + str(i).zfill(4) +
+                                        "_cam" + str(cam) + ".png")
+                cv2.imwrite(fname_out, frame)
+
+            # let's now index into the frame based on the crop-table
+            # first grab the camera specific crop
+            # this is how the data is stored: cam1: [100,1280,0,720]
+            crop = crops[f"cam{cam}"]
+            x1, x2, y1, y2 = crop
+            # shrink the coords by the required amountd
+            x1 //= shrink_factor
+            x2 //= shrink_factor
+            y1 //= shrink_factor
+            y2 //= shrink_factor
+            #print ('frame', frame.shape, " crop: ", x1, y1, x2, y2)
+            
+            # if y1 is > 0 then we need to just
+            if y1>0:
+                # we need to grab the frame and do a roll and fill with blanks
+                frame = np.roll(frame, y1, axis=0)
+                frame[:y1,:,:] = 0
+                frame = frame[:, x1:x2]
+            else:
+                frame = frame[y1:y2, x1:x2]
+            #print ("final frame shape: ", frame.shape)
+            # 
+        
+            #
+            frame_all_cams_rows[row_index].append(frame)
 
 
-                frame_translated = frame
+        # now hstack within each row
+        row_images = []
+        for k in range(nrows):
+            row_images.append(np.hstack(frame_all_cams_rows[k]))
 
-                col = 5 - ((cam - 1) // 3)  # 6 total columns → index 0..5 reversed
-                row = (cam - 1) % 3  # 0=top, 1=middle, 2=bottom in OpenCV coords
+        # then vstack across rows
+        frame_all_cams_blank = np.vstack(row_images)
+        # print ("frame all cams shape: ", frame_all_cams_blank.shape)
 
-                #
-                r0 = row * frame_height + trans_cum_y
-                r1 = r0 + frame_height + trans_cum_y
-                c0 = trans_cum_x
-                c1 = c0 + frame_width 
+        #return
 
-                # #
-
-                #
-                frame_all_cams_blank[r0:r1, c0:c1, :] = frame_translated
-
+        #print ("frame all cams shape: ", frame_all_cams_blank.shape)
+        #return
+        
         # now write the combined frame to the video file
         out.write(frame_all_cams_blank)
 
         # also save the img to disk
-        if False:
+        if True:
             fname = os.path.join(root_dir, "frames", "frame_" + str(minute).zfill(2) + "_" + str(i).zfill(4) + ".png")
             cv2.imwrite(fname, frame_all_cams_blank)
 
