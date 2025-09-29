@@ -92,7 +92,9 @@ def decompress_cams(cam,
     ############## Generate Metadata ################
     #################################################
     
-    fname_root = os.path.join(root_dir, str(cam), 
+    fname_root = os.path.join(root_dir, 
+                              str(cam),
+                              date,
                               str(cage_id) + "_" +
                               str(cam) + "_" +
                               date+"_"+str(hour_start)+"_"+str(minute).zfill(2)+"*.npz")
@@ -467,6 +469,7 @@ def get_video_size(nrows,
 
 #
 def make_video(root_dir,
+               date,
                 minute,
                 n_cams,
                 fname_combined,
@@ -557,6 +560,7 @@ def make_video(root_dir,
             # find the filename for this camera and bin
             fname_frame = os.path.join(root_dir,
                                     str(cam),
+                                    date,
                                     "shrink_" + str(shrink_factor) +
                                     "minute_"+
                                     str(minute) + "_clean.bin")
