@@ -471,6 +471,7 @@ def get_video_size(nrows,
 def make_video(root_dir,
                date,
                 minute,
+                hour_start,
                 n_cams,
                 fname_combined,
                 shrink_factor=1,
@@ -600,7 +601,8 @@ def make_video(root_dir,
             #print ("row: ", row_index)
 
             # we want to save each of these frames as png for offling analysis
-            if i in frame_ids_align:
+            if False:
+            #if i in frame_ids_align:
                 fname_out = os.path.join(root_dir, "frames",
                                         "align_frame_" + str(minute).zfill(2) + "_" + str(i).zfill(4) +
                                         "_cam" + str(cam) + ".png")
@@ -651,7 +653,7 @@ def make_video(root_dir,
         out.write(frame_all_cams_blank)
 
         # also save the img to disk
-        if True:
+        if False:
             fname = os.path.join(root_dir, "frames", "frame_" + str(minute).zfill(2) + "_" + str(i).zfill(4) + ".png")
             cv2.imwrite(fname, frame_all_cams_blank)
 
