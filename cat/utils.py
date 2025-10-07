@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import subprocess
 import glob
 import cv2
 import shutil  # <-- needed for copying
@@ -41,7 +42,9 @@ def load_times(fname,
 
 # find the filename for each camera that falls in minute #1
 def process_cams(cam_ids,
+                 n_cores,
                  root_dir,
+                 ram_disk_dir,
                  cage_id,
                  date,
                  hour_start,
@@ -55,6 +58,7 @@ def process_cams(cam_ids,
             print ("... processing camera: ", cam, " for minute: ", minute)
             decompress_cams(cam,
                             root_dir,
+                            ram_disk_dir,
                             cage_id,
                             date,
                             hour_start,
@@ -65,6 +69,7 @@ def process_cams(cam_ids,
         parmap.map(decompress_cams, 
                    cam_ids,
                     root_dir,
+                    ram_disk_dir,
                     cage_id,
                     date,
                     hour_start,
@@ -72,12 +77,25 @@ def process_cams(cam_ids,
                     shrink_factor=shrink_factor,
                     skip_regeneration=False,
                     pm_pbar=True,
-                    pm_processes=4,  # adjust based on your system)
+                    pm_processes=n_cores,  # adjust based on your system)
         )
+
+def get_ramdisk_dir(subdir="ramdisk"):
+    """
+    Returns a path to a RAM-backed directory (uses /dev/shm).
+    Creates it if it doesn't exist.
+    Works without sudo and is automatically cleared on reboot.
+    """
+    path = os.path.join("/dev/shm", subdir)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 
 # 
 def decompress_cams(cam,
                     root_dir,
+                    ram_disk_dir,
                     cage_id,
                     date,
                     hour_start,
@@ -108,8 +126,45 @@ def decompress_cams(cam,
     if len(fnames)==0:
         if verbose:
             print ('... no files found for camera: ', cam, " minute: ", minute)
+            print ("looking for files matching: ", fname_root)
             print ('')
-        return     
+
+        # --- FIX STARTS HERE ---
+        # If no video for the current minute, check if there’s a temp file for this minute
+        temp_path = os.path.join(
+            ram_disk_dir,
+            f"{cam}_shrink_{shrink_factor}minute_{minute}_temp.bin"
+        )
+        clean_path = os.path.join(
+            ram_disk_dir,
+            f"{cam}_shrink_{shrink_factor}minute_{minute}_clean.bin"
+        )
+
+        if os.path.exists(temp_path):
+            shutil.move(temp_path, clean_path)
+
+        # we also need to pad this file so it has 6000 frames
+        if os.path.exists(clean_path):
+            if verbose:
+                print ("... padding existing clean file to full 6000 frames: ", clean_path)
+            frame_height = 720 // shrink_factor
+            frame_width = 1280 // shrink_factor
+            channels = 3
+            frame_size_bytes = frame_height * frame_width * channels
+            total_frames = 6000
+            current_size = os.path.getsize(clean_path)
+            current_frames = current_size // frame_size_bytes
+            frames_to_add = total_frames - current_frames
+
+            if frames_to_add > 0:
+                blank_frame = np.zeros((frame_height, frame_width, channels), dtype=np.uint8)
+                with open(clean_path, 'ab') as f:
+                    for _ in range(frames_to_add):
+                        f.write(blank_frame.tobytes())
+                if verbose:
+                    print (f"... added {frames_to_add} blank frames to {clean_path}")
+
+        return 
 
     #      
     if verbose:
@@ -137,16 +192,24 @@ def decompress_cams(cam,
     #################################################
     # process #1
     fname_video = fnames[0].replace('_metadata.npz', '.h264') 
+
+    # move the fname_video file to ramdrive
+    fname_video_ramdisk = os.path.join(ram_disk_dir, os.path.basename(fname_video))
+    if not os.path.exists(fname_video_ramdisk):
+        if verbose:
+            print ("... copying video file to ramdisk: ", fname_video_ramdisk)
+        shutil.copy(fname_video, fname_video_ramdisk)
+
     # use opencv to uncomrpess the video to .png files on disk
     decompress_video(minute,
-                        fname_video,
-                        root_dir,
-                        cam,
-                        time_stamps_binned,
-                        unix_time_to_start_of_minute, 
-                        shrink_factor,
-                        skip_regeneration=skip_regeneration,
-                        overwrite_existing=True)     
+                    fname_video_ramdisk,
+                    root_dir,
+                    cam,
+                    time_stamps_binned,
+                    unix_time_to_start_of_minute, 
+                    shrink_factor,
+                    skip_regeneration=skip_regeneration,
+                    overwrite_existing=True)     
     print ('')
 
 
@@ -166,7 +229,7 @@ def decompress_video(minute,
         Not clear yet if we should just save to disk, but probably,
     '''
 
-    verbose = True
+    #verbose = True
     # use opencv to load video
     # and save the png files with the filenmae of 
     
@@ -182,11 +245,11 @@ def decompress_video(minute,
     # was already started previously.
     # 2. If it exists, then we make a copy as .bin and append to it. 
     # 2.1 after finishing appending to it we rename it to .bin and delete the _temp.bin 
-    fname_video_current_minute_clean= os.path.split(fname)[0]+"/shrink_"+ str(shrink_factor) \
+    fname_video_current_minute_clean= os.path.split(fname)[0]+"/"+str(cam) + "_shrink_"+ str(shrink_factor) \
                     + "minute_" + str(minute) + "_clean.bin"
-    fname_video_current_minute_temp = os.path.split(fname)[0]+"/shrink_"+ str(shrink_factor) \
+    fname_video_current_minute_temp = os.path.split(fname)[0]+"/"+str(cam) + "_shrink_"+ str(shrink_factor) \
                     + "minute_" + str(minute) + "_temp.bin"
-    fname_video_next_minute_temp = os.path.split(fname)[0]+"/shrink_"+ str(shrink_factor) \
+    fname_video_next_minute_temp = os.path.split(fname)[0]+"/"+str(cam) + "_shrink_"+ str(shrink_factor) \
                     + "minute_" + str(minute+1) + "_temp.bin"
     
     # check if the clean file already exists
@@ -424,6 +487,9 @@ def decompress_video(minute,
     if verbose:
         print ("# UNIQUE frames written to next min video", n_unique_frames_written,
               ", n_frames_read: ", n_frames_read)
+        
+    # delete the .h264 file
+    os.remove(fname)
 
 
 
@@ -467,8 +533,53 @@ def get_video_size(nrows,
     return final_width, final_height
 
 
+import os
+
+def delete_bins(ram_disk_dir, 
+                n_cams, 
+                minute, 
+                shrink_factor=1, 
+                verbose=False):
+    """
+    Delete the known *_clean.bin files for all cameras after video creation.
+
+    Parameters
+    ----------
+    ram_disk_dir : str
+        Path to the RAM disk directory (e.g. /dev/shm/ramdisk).
+    n_cams : int
+        Number of camera channels used.
+    minute : int
+        The minute index used in file naming.
+    shrink_factor : int, optional
+        Shrink factor used in file naming (default = 1).
+    verbose : bool
+        Print deletion progress.
+
+    Returns
+    -------
+    int : Number of files successfully deleted.
+    """
+
+    # also delete all .h264 files in the ramdisk dir
+    h264_files = glob.glob(os.path.join(ram_disk_dir, "*.h264"))
+    for h264_file in h264_files:
+        os.remove(h264_file)
+
+    # delte all _clean.bin files
+    clean_files = glob.glob(os.path.join(ram_disk_dir, "*clean.bin"))
+    for clean_file in clean_files:
+        os.remove(clean_file)
+
+    # delete previous _temp.bin files
+    temp_files = glob.glob(os.path.join(ram_disk_dir, "*"+str(minute-1)+ "_temp.bin"))
+    for temp_file in temp_files:
+        os.remove(temp_file)
+
+
 #
 def make_video(root_dir,
+               ram_disk_dir,
                date,
                 minute,
                 hour_start,
@@ -477,7 +588,7 @@ def make_video(root_dir,
                 shrink_factor=1,
                 frame_subsample=1,
                 overwrite_existing = False,
-                delete_bins = False,
+                delete_bins_flag = False,
                 ):
     
     from tqdm import trange
@@ -502,7 +613,7 @@ def make_video(root_dir,
     # load translation table
     fname_crop_table ="crop_table.yaml"
     crops = yaml.safe_load(open(fname_crop_table, 'r'))
-    print ("crop table: ", crops)
+    #print ("crop table: ", crops)
     #crop table:  {'cam1': [150, 1280, 0, 720], 'cam2': [150, 1280, 0, 720], 'cam3': [150, 1280, 0, 720], 'cam4': [100, 1180, 0, 720], 'cam5': [100, 1180, 0, 720], 'cam6': [100, 1180, 0, 720], 'cam7': [100, 1180, 0, 720], 'cam8': [100, 1180, 0, 720], 'cam9': [100, 1180, 0, 720], 'cam10': [100, 1180, 0, 720], 'cam11': [100, 1180, 0, 720], 'cam12': [100, 1180, 0, 720], 'cam13': [100, 1180, 0, 720], 'cam14': [100, 1180, 0, 720], 'cam15': [100, 1180, 0, 720], 'cam16': [0, 1180, 0, 720], 'cam17': [0, 1180, 0, 720], 'cam18': [0, 1180, 0, 720]}
 
     # ok need to figure out the fully frame size based on these crops and the rows that they will be appended above
@@ -515,7 +626,7 @@ def make_video(root_dir,
     if (shrink_factor > 1):
         vid_width //= shrink_factor
         vid_height //= shrink_factor
-        print ("shrinking final video to: ", vid_width, "x", vid_height)
+        #print ("shrinking final video to: ", vid_width, "x", vid_height)
 
     #
     #################################################################
@@ -526,7 +637,7 @@ def make_video(root_dir,
     if shrink_factor > 1:
         frame_height //= shrink_factor
         frame_width  //= shrink_factor
-        print ("shrinking video frames to: ", frame_height, "x", frame_width)
+        #print ("shrinking video frames to: ", frame_height, "x", frame_width)
 
     # make a blank default image
     frame_blank = np.zeros((frame_height, frame_width, channels), dtype=np.uint8)
@@ -535,12 +646,12 @@ def make_video(root_dir,
     frame_size_bytes = frame_height * frame_width * channels  # 1280 * 768 * 3 = 2,359,296 bytes
 
     if os.path.exists(fname_combined) and overwrite_existing==False:
-        print ("... combined video file already exists: ", fname_combined)
+        #print ("... combined video file already exists: ", fname_combined)
         return
 
     #frame_all_cams_blank = np.zeros((frame_height * rows, frame_width * cols, channels), dtype=np.uint8)
     #
-    print ("creating combined video file: ", fname_combined)
+    #print ("creating combined video file: ", fname_combined)
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
     out = cv2.VideoWriter(fname_combined, 
                           fourcc, 
@@ -559,10 +670,8 @@ def make_video(root_dir,
         # loop over cameras and grab a frame from each
         for cam in range(n_cams,0,-1):
             # find the filename for this camera and bin
-            fname_frame = os.path.join(root_dir,
-                                    str(cam),
-                                    date,
-                                    "shrink_" + str(shrink_factor) +
+            fname_frame = os.path.join(ram_disk_dir,
+                                    str(cam) + "_shrink_" + str(shrink_factor) +
                                     "minute_"+
                                     str(minute) + "_clean.bin")
             
@@ -585,10 +694,12 @@ def make_video(root_dir,
                                                                           channels))
                     except:
                         # ok we need to print a lot of metadata to understan why we're reading patst the end of the file
-                        print ("i: ", i)
-                        print ("cam: ", cam)
-                        print ("fname: ", fname_frame)
-                        print ("frame_size_bytes: ", frame_size_bytes)
+                        #pass
+                        frame = frame_blank.copy()
+                        # print ("i: ", i)
+                        # print ("cam: ", cam)
+                        # print ("fname: ", fname_frame)
+                        # print ("frame_size_bytes: ", frame_size_bytes)
             else:
                 frame = frame_blank.copy()
 
@@ -641,7 +752,14 @@ def make_video(root_dir,
             row_images.append(np.hstack(frame_all_cams_rows[k]))
 
         # then vstack across rows
-        frame_all_cams_blank = np.vstack(row_images)
+        try:
+            frame_all_cams_blank = np.vstack(row_images)
+        except:
+            for k in range(len(row_images)):
+                print ("row image shape: ", row_images[k].shape)
+            print ("... error vstacking row images ...")
+
+        #return
         # print ("frame all cams shape: ", frame_all_cams_blank.shape)
 
         #return
@@ -659,4 +777,13 @@ def make_video(root_dir,
 
     # this is probably coming at the end. not sure exactly
     out.release()
-    print ('finished writing combined video file: ', fname_combined)
+    #print ('finished writing combined video file: ', fname_combined)
+
+    # delete the bin files
+    if delete_bins_flag:
+        delete_bins(ram_disk_dir, 
+                    n_cams, 
+                    minute, 
+                    shrink_factor=shrink_factor, 
+                    verbose=True)
+
