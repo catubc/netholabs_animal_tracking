@@ -122,7 +122,9 @@ def decompress_cams(cam,
     # There can only be 0 or 1 videos at most as we save 1 minute video per camera
     fnames = glob.glob(fname_root)
 
+    #######################################################
     # if the camera has files we then need to load the frame times
+    #######################################################
     if len(fnames)==0:
         if verbose:
             print ('... no files found for camera: ', cam, " minute: ", minute)
@@ -133,11 +135,11 @@ def decompress_cams(cam,
         # If no video for the current minute, check if there’s a temp file for this minute
         temp_path = os.path.join(
             ram_disk_dir,
-            f"{cam}_shrink_{shrink_factor}minute_{minute}_temp.bin"
+            f"{cam}_shrink_{shrink_factor}_hour_{hour_start}_minute_{minute}_temp.bin"
         )
         clean_path = os.path.join(
             ram_disk_dir,
-            f"{cam}_shrink_{shrink_factor}minute_{minute}_clean.bin"
+            f"{cam}_shrink_{shrink_factor}_hour_{hour_start}_minute_{minute}_clean.bin"
         )
 
         if os.path.exists(temp_path):
@@ -166,7 +168,9 @@ def decompress_cams(cam,
 
         return 
 
-    #      
+    #######################################################
+    ############### CONVERT TIME STAMPS ####################
+    #######################################################
     if verbose:
         print ("minute:", minute, " cam:", cam ) #, " files:", fnames)
 
@@ -192,6 +196,8 @@ def decompress_cams(cam,
     #################################################
     # process #1
     fname_video = fnames[0].replace('_metadata.npz', '.h264') 
+    if os.path.exists(fname_video)==False:
+        fname_video = fnames[0].replace('_metadata.npz', '.mp4') 
 
     # move the fname_video file to ramdrive
     fname_video_ramdisk = os.path.join(ram_disk_dir, os.path.basename(fname_video))
@@ -202,6 +208,7 @@ def decompress_cams(cam,
 
     # use opencv to uncomrpess the video to .png files on disk
     decompress_video(minute,
+                     hour_start,
                     fname_video_ramdisk,
                     root_dir,
                     cam,
@@ -215,6 +222,7 @@ def decompress_cams(cam,
 
 #
 def decompress_video(minute, 
+                     hour_start,
                      fname,
                      root_dir,
                      cam,
@@ -246,12 +254,12 @@ def decompress_video(minute,
     # 2. If it exists, then we make a copy as .bin and append to it. 
     # 2.1 after finishing appending to it we rename it to .bin and delete the _temp.bin 
     fname_video_current_minute_clean= os.path.split(fname)[0]+"/"+str(cam) + "_shrink_"+ str(shrink_factor) \
-                    + "minute_" + str(minute) + "_clean.bin"
+                    + "_hour_" + hour_start + "_minute_" + str(minute) + "_clean.bin"
     fname_video_current_minute_temp = os.path.split(fname)[0]+"/"+str(cam) + "_shrink_"+ str(shrink_factor) \
-                    + "minute_" + str(minute) + "_temp.bin"
+                    + "_hour_" + hour_start + "_minute_" + str(minute) + "_temp.bin"
     fname_video_next_minute_temp = os.path.split(fname)[0]+"/"+str(cam) + "_shrink_"+ str(shrink_factor) \
-                    + "minute_" + str(minute+1) + "_temp.bin"
-    
+                    + "_hour_" + hour_start + "_minute_" + str(minute+1) + "_temp.bin"
+
     # check if the clean file already exists
     if skip_regeneration and os.path.exists(fname_video_current_minute_clean):
         if verbose:
@@ -565,6 +573,11 @@ def delete_bins(ram_disk_dir,
     h264_files = glob.glob(os.path.join(ram_disk_dir, "*.h264"))
     for h264_file in h264_files:
         os.remove(h264_file)
+        
+    # also delete all .h264 files in the ramdisk dir
+    mp4_files = glob.glob(os.path.join(ram_disk_dir, "*.mp4"))
+    for mp4_file in mp4_files:
+        os.remove(mp4_file)
 
     # delte all _clean.bin files
     clean_files = glob.glob(os.path.join(ram_disk_dir, "*clean.bin"))
@@ -600,15 +613,6 @@ def make_video(root_dir,
         [18, 15, 12, 9, 6, 3]
     ])
     nrows, ncols = 3, 6
-
-    #
-    frame_ids_align = np.array([1360,
-                                1460,
-                                1760,
-                                3130,
-                                4160,
-                                5060,
-                                ])
 
     # load translation table
     fname_crop_table ="crop_table.yaml"
@@ -672,7 +676,7 @@ def make_video(root_dir,
             # find the filename for this camera and bin
             fname_frame = os.path.join(ram_disk_dir,
                                     str(cam) + "_shrink_" + str(shrink_factor) +
-                                    "minute_"+
+                                    "_hour_" + hour_start + "_minute_"+
                                     str(minute) + "_clean.bin")
             
             #
