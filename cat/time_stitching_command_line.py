@@ -64,40 +64,45 @@ for date in dates:
             print ("Video exists for Minute ", str(minute), "...skipping...")
             continue
 
-        #
-        if build_video_only==False:
-            process_cams(cam_ids,
-                         n_cores,
-                         input_dir,
-                         ram_disk_dir,
-                         cage_id,
-                         date,
-                         hour_start,
-                         minute,
-                         parallel_flag=parallel_flag,
-                         shrink_factor=shrink_factor,
-                         skip_regeneration=False)
+        try:
+            #
+            if build_video_only==False:
+                process_cams(cam_ids,
+                            n_cores,
+                            input_dir,
+                            ram_disk_dir,
+                            cage_id,
+                            date,
+                            hour_start,
+                            minute,
+                            parallel_flag=parallel_flag,
+                            shrink_factor=shrink_factor,
+                            skip_regeneration=False)
 
-        #################################################
-        ############### Make video ######################
-        #################################################
-        # process #2 - here we make the mosaic 1 minute video based on the available files
-        # we loop over all possible files 
-        overwrite_existing = False
-        make_video(input_dir,
-                   ram_disk_dir,
-                   date,
-                   minute,
-                   hour_start,
-                   n_cams,
-                   fname_combined,
-                   shrink_factor=shrink_factor,
-                   frame_subsample=frame_subsample,
-                   overwrite_existing=overwrite_existing,
-                   delete_bins_flag = delete_bins_flag)
-        
-        #print ("***************************")
-        print ('')
+            #################################################
+            ############### Make video ######################
+            #################################################
+            # process #2 - here we make the mosaic 1 minute video based on the available files
+            # we loop over all possible files 
+            overwrite_existing = False
+            make_video(input_dir,
+                    ram_disk_dir,
+                    date,
+                    minute,
+                    hour_start,
+                    n_cams,
+                    fname_combined,
+                    shrink_factor=shrink_factor,
+                    frame_subsample=frame_subsample,
+                    overwrite_existing=overwrite_existing,
+                    delete_bins_flag = delete_bins_flag)
+            
+            #print ("***************************")
+            print ('')
+
+        except:
+            # dlete the whole ramdrive and continue
+            os.system("rm -rf " + ram_disk_dir + "/*")
 
         #break
 
