@@ -7,6 +7,582 @@ import shutil  # <-- needed for copying
 import yaml
 import parmap
 from datetime import datetime, timezone, timedelta
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from tqdm import tqdm
+import cv2
+
+
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
+"""
+yolo_utils.py
+-------------
+Utility functions for loading YOLO tracking CSVs, building 4D track arrays,
+matching tracks across frames, and plotting trajectories.
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# ------------------------------
+# 1️⃣  Data loading and array construction
+# ------------------------------
+def load_yolo_csv(df, n_tracks=10, n_frames=1500):
+    """
+    Convert a YOLO tracking DataFrame into a 4D array [track, frame, feature, (x, y, p)].
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        YOLO CSV containing FRAME, TRACK, and feature (X,Y,P) columns.
+    n_tracks : int, optional
+        Maximum number of tracks to allocate (default 10).
+    n_frames : int, optional
+        Fixed number of frames per video (default 1500).
+
+    Returns
+    -------
+    np.ndarray
+        4D array of shape (n_tracks, n_frames, n_features, 3).
+    """
+    features = ["NOSE", "LEFT_EAR", "RIGHT_EAR", "LEFT_SIDE",
+                "CENTER", "RIGHT_SIDE", "TAIL_BASE"]
+    n_features = len(features)
+    tracks = np.full((n_tracks, n_frames, n_features, 3), np.nan)
+
+    for _, row in df.iterrows():
+        frame = int(row["FRAME"])
+        track = int(row["TRACK"])
+        if track >= n_tracks or frame >= n_frames:
+            continue
+
+        for f_idx, f_name in enumerate(features):
+            x = row[f"{f_name}_X"]
+            y = row[f"{f_name}_Y"]
+            p = row[f"{f_name}_P"]
+            tracks[track - 1, frame, f_idx, :] = [x, y, p]
+
+    return tracks
+
+
+# ------------------------------
+# 2️⃣  Matching across frames
+# ------------------------------
+def match_tracks_greedy(tracks, n_animals=3, max_dist=100):
+    """
+    Greedy nearest-neighbor track matching across frames.
+    Maintains n_animals continuous tracks, filling missing data with previous positions.
+
+    Parameters
+    ----------
+    tracks : np.ndarray
+        (n_tracks_detected, n_frames, n_features, 3)
+    n_animals : int
+        True number of tracked animals (default 3)
+    max_dist : float
+        Maximum distance (in px) to consider a valid match.
+
+    Returns
+    -------
+    np.ndarray
+        Matched track array of shape (n_animals, n_frames, n_features, 3)
+    """
+    n_tracks_detected, n_frames, n_features, _ = tracks.shape
+    matched_tracks = np.full((n_animals, n_frames, n_features, 3), np.nan)
+
+    def compute_centroid(frame_tracks):
+        return np.nanmedian(frame_tracks[:, :, :2], axis=1)  # (n_tracks, 2)
+
+    # --- initialize from first frame ---
+    centroids_0 = compute_centroid(tracks[:, 0])
+    valid_0 = ~np.isnan(centroids_0[:, 0])
+    valid_indices = np.where(valid_0)[0][:n_animals]
+    for i, idx in enumerate(valid_indices):
+        matched_tracks[i, 0, :, :] = tracks[idx, 0, :, :]
+
+    # --- main greedy matching loop ---
+    for t in range(1, n_frames):
+        prev_centroids = compute_centroid(matched_tracks[:, t - 1])
+        curr_centroids = compute_centroid(tracks[:, t])
+        curr_valid = ~np.isnan(curr_centroids[:, 0])
+        curr_pts = curr_centroids[curr_valid]
+        curr_ids = np.where(curr_valid)[0]
+
+        if len(curr_pts) == 0:
+            matched_tracks[:, t, :, :] = matched_tracks[:, t - 1, :, :]
+            continue
+
+        dist = np.linalg.norm(prev_centroids[:, None, :] - curr_pts[None, :, :], axis=2)
+        used_curr = set()
+
+        for i in range(n_animals):
+            nearest_idx = np.argmin(dist[i])
+            c_idx = curr_ids[nearest_idx]
+            d = dist[i, nearest_idx]
+
+            if d > max_dist or nearest_idx in used_curr:
+                matched_tracks[i, t, :, :] = matched_tracks[i, t - 1, :, :]
+            else:
+                matched_tracks[i, t, :, :] = tracks[c_idx, t, :, :]
+                used_curr.add(nearest_idx)
+
+        # fill missing
+        for i in range(n_animals):
+            if np.isnan(matched_tracks[i, t, 0, 0]):
+                matched_tracks[i, t, :, :] = matched_tracks[i, t - 1, :, :]
+
+    return matched_tracks
+
+
+def compute_centroid_over_time2(all_tracks: np.ndarray) -> np.ndarray:
+    """
+    Compute the centroid (median x,y) over time for all animals in one array,
+    with forward fill for missing frames per animal.
+
+    Parameters
+    ----------
+    all_tracks : np.ndarray
+        Array of shape (n_animals, n_frames, n_features, 3),
+        where the last dimension is (x, y, p).
+
+    Returns
+    -------
+    np.ndarray
+        Centroid positions of shape (n_animals, n_frames, 2)
+    """
+    n_animals, n_frames, _, _ = all_tracks.shape
+    centroids = np.nanmedian(all_tracks[:, :, :, :2], axis=2)  # (n_animals, n_frames, 2)
+
+    # forward fill NaNs per animal
+    for i in range(n_animals):
+        for t in range(1, n_frames):
+            if np.isnan(centroids[i, t, 0]) or np.isnan(centroids[i, t, 1]):
+                centroids[i, t] = centroids[i, t - 1]
+
+    return centroids
+# ------------------------------
+# 3️⃣  Centroid computation
+# ------------------------------
+def compute_centroid_over_time(frame_tracks):
+    """
+    Compute centroid (x,y) over time for one track, with forward fill for missing frames.
+    """
+    centroid = np.nanmedian(frame_tracks[:, :, :2], axis=1)
+    for i in range(1, centroid.shape[0]):
+        if np.isnan(centroid[i, 0]) or np.isnan(centroid[i, 1]):
+            centroid[i] = centroid[i - 1]
+    return centroid
+from tqdm import tqdm  # <- progress bar
+
+
+
+
+
+def animate_skeletons_with_video_fast(csv_file,
+                                      tracks,
+                                      save_path=None,
+                                      fps=30,
+                                      title="Skeleton Animation",
+                                      show_progress=True):
+    avi_fname = csv_file.replace(".csv", ".avi")
+    cap = cv2.VideoCapture(avi_fname)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"❌ Could not open video file: {avi_fname}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    n_animals, n_frames, n_features, _ = tracks.shape
+    n_frames = min(n_frames, total_frames)
+
+    dpi = 100
+    fig, ax = plt.subplots(figsize=(width / dpi, height / dpi), dpi=dpi)
+    ax.axis("off")
+
+    frame_display = ax.imshow(np.zeros((height, width, 3), dtype=np.uint8))
+    colors = ["tab:blue", "tab:red", "tab:green"]
+
+    # Pre-create one line per animal (7 keypoints connected)
+    lines = [ax.plot([], [], "o-", lw=1.5, color=colors[i])[0] for i in range(n_animals)]
+
+    if show_progress:
+        pbar = tqdm(total=n_frames, desc="Rendering frames", ncols=80)
+
+    def update(frame_idx):
+        ret, frame = cap.read()
+        if not ret:
+            return lines
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_display.set_data(frame_rgb)
+
+        for i, line in enumerate(lines):
+            pts = tracks[i, frame_idx, :, :2]
+            valid = ~np.isnan(pts[:, 0])
+            line.set_data(pts[valid, 0], pts[valid, 1])
+
+        if show_progress and frame_idx % 10 == 0:
+            pbar.update(10)
+
+        return [frame_display] + lines
+
+    ani = FuncAnimation(fig,
+                        update,
+                        frames=n_frames,
+                        interval=1000 / fps,
+                        blit=True,       # ✅ huge speedup
+                        repeat=False)
+
+    if save_path:
+        ani.save(save_path, writer="ffmpeg", fps=fps)
+    else:
+        plt.show()
+
+    if show_progress:
+        pbar.close()
+
+    cap.release()
+    plt.close(fig)
+    return ani
+
+#
+def animate_skeletons_original(csv_file,
+                               tracks,
+                               save_path=None,
+                               fps=30,
+                               title="Raw YOLO Detections",
+                               show_progress=True):
+    """
+    Animate all raw YOLO detections (no track matching) over the video background.
+
+    Parameters
+    ----------
+    csv_file : str
+        Path to the YOLO CSV file (used to infer .avi filename)
+    tracks : np.ndarray
+        Array of shape (n_tracks, n_frames, n_features, 3)
+    save_path : str, optional
+        If provided, saves animation to this path (e.g. .mp4 or .gif)
+    fps : int, optional
+        Frames per second (default 30)
+    title : str, optional
+        Figure title
+    show_progress : bool, optional
+        Show tqdm progress bar (default True)
+    """
+    # --- Infer video filename ---
+    avi_fname = csv_file.replace(".csv", ".avi")
+    cap = cv2.VideoCapture(avi_fname)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"❌ Could not open video file: {avi_fname}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"🎥 Loaded video: {avi_fname} ({width}×{height}, {total_frames} frames)")
+
+    n_tracks, n_frames, n_features, _ = tracks.shape
+    n_frames = min(n_frames, total_frames)
+
+    # --- Set up figure ---
+    dpi = 100
+    fig, ax = plt.subplots(figsize=(width / dpi, height / dpi), dpi=dpi)
+    ax.axis("off")
+    ax.set_title(title)
+
+    # --- Background video frame ---
+    frame_display = ax.imshow(np.zeros((height, width, 3), dtype=np.uint8))
+
+    # --- Scatter for all detections ---
+    sc = ax.scatter([], [], s=8, color="tab:gray", alpha=0.7)
+    text = ax.text(10, 20, "", fontsize=9, color="white", backgroundcolor="black")
+
+    # --- Progress bar ---
+    if show_progress:
+        pbar = tqdm(total=n_frames, desc="Rendering frames", ncols=80)
+
+    # --- Frame update function ---
+    def update(frame_idx):
+        ret, frame = cap.read()
+        if not ret:
+            return [frame_display, sc]
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_display.set_data(frame_rgb)
+
+        # Flatten all keypoints across all tracks
+        frame_points = tracks[:, frame_idx, :, :2].reshape(-1, 2)
+        valid = ~np.isnan(frame_points[:, 0])
+        sc.set_offsets(frame_points[valid])
+
+        text.set_text(f"Frame {frame_idx+1}/{n_frames}")
+
+        if show_progress and frame_idx % 10 == 0:
+            pbar.update(10)
+        return [frame_display, sc, text]
+
+    # --- Build animation ---
+    ani = FuncAnimation(
+        fig,
+        update,
+        frames=n_frames,
+        interval=1000 / fps,
+        blit=False,
+        repeat=False,
+    )
+
+    # --- Save or show ---
+    if save_path:
+        print(f"💾 Saving animation to {save_path} ...")
+        ani.save(save_path, writer="ffmpeg", fps=fps)
+        print(f"✅ Saved: {save_path}")
+    else:
+        plt.show()
+
+    if show_progress:
+        pbar.close()
+
+    cap.release()
+    plt.close(fig)
+    return ani
+
+
+
+def animate_skeletons_with_video(csv_file,
+                                 tracks,
+                                 save_path=None,
+                                 fps=30,
+                                 title="Skeleton Animation",
+                                 show_progress=True):
+    """
+    Animate YOLO-tracked skeletons over the corresponding video frames.
+
+    Parameters
+    ----------
+    csv_file : str
+        Path to the YOLO CSV file (used to infer .avi filename)
+    tracks : np.ndarray
+        Array of shape (n_animals, n_frames, n_features, 3)
+    save_path : str, optional
+        If provided, saves animation as MP4 or GIF.
+    fps : int, optional
+        Frames per second (default = 30)
+    title : str, optional
+        Title of the animation.
+    show_progress : bool, optional
+        Whether to display tqdm progress bar.
+    """
+    avi_fname = csv_file.replace(".csv", ".avi")
+
+    # --- Load video ---
+    cap = cv2.VideoCapture(avi_fname)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"❌ Could not open video file: {avi_fname}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"🎬 Loaded video: {avi_fname} ({width}×{height}, {total_frames} frames)")
+
+    # --- Tracking data info ---
+    n_animals, n_frames, n_features, _ = tracks.shape
+    n_frames = min(n_frames, total_frames)
+
+    # --- Setup Matplotlib figure ---
+    dpi = 100
+    fig_w = width / dpi
+    fig_h = height / dpi
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
+    ax.set_title(title)
+    ax.axis("off")
+
+    colors = ["tab:blue", "tab:red", "tab:green"]
+    scatters = [ax.scatter([], [], s=20, color=colors[i]) for i in range(n_animals)]
+
+    # Background image (for video frames)
+    frame_display = ax.imshow(np.zeros((height, width, 3), dtype=np.uint8))
+
+    # --- Progress bar ---
+    if show_progress:
+        pbar = tqdm(total=n_frames, desc="Rendering frames", ncols=80)
+
+    # --- Update function per frame ---
+    def update(frame_idx):
+        ret, frame = cap.read()
+        if not ret:
+            return scatters
+
+        # Convert BGR (OpenCV) to RGB (Matplotlib)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_display.set_data(frame_rgb)
+
+        for i, sc in enumerate(scatters):
+            frame_data = tracks[i, frame_idx]
+            valid = ~np.isnan(frame_data[:, 0])
+            sc.set_offsets(frame_data[valid, :2])
+
+        if show_progress and frame_idx % 10 == 0:
+            pbar.update(10)
+
+        return [frame_display] + scatters
+
+    # --- Build animation ---
+    ani = FuncAnimation(
+        fig,
+        update,
+        frames=n_frames,
+        interval=1000 / fps,
+        blit=False,
+        repeat=False,
+    )
+
+    # --- Save or display ---
+    if save_path:
+        print(f"Saving animation to {save_path} ...")
+        ani.save(save_path, writer="ffmpeg", fps=fps)
+        print(f"✅ Saved: {save_path}")
+    else:
+        plt.show()
+
+    if show_progress:
+        pbar.close()
+
+    cap.release()
+    plt.close(fig)
+    return ani
+
+
+
+
+
+
+#
+def plot_trajectory2(fname_csv,
+                     centroid_orig, 
+                     centroid_fixed, 
+                     title=None):
+    """
+    Plot trajectories for 3 animals using blue, red, and green color shades.
+    Alpha fades from light (early) to dark (late).
+    Left: Original
+    Right: Matched
+
+    Parameters
+    ----------
+    centroid_orig : np.ndarray
+        (3, n_frames, 2)
+    centroid_fixed : np.ndarray
+        (3, n_frames, 2)
+    title : str, optional
+        Figure title
+    """
+    # Define 3 base colors (fixed for all plots)
+    base_colors = ["tab:blue", "tab:red", "tab:green"]
+    n_animals = min(3, centroid_orig.shape[0])
+    n_frames = centroid_orig.shape[1]
+
+    # Generate fading alpha weights (light → dark)
+    alphas = np.linspace(0.2, 1.0, n_frames)
+
+    fig, axs = plt.subplots(1, 2, figsize=(10, 6))
+    titles = ["Original Trajectories", "Matched Trajectories"]
+
+    for j, (data, ax) in enumerate(zip([centroid_orig, centroid_fixed], axs)):
+        for i in range(n_animals):
+            centroid = data[i]
+            valid = ~np.isnan(centroid[:, 0])
+
+            # color array: same base RGB, varying alpha
+            rgba = np.zeros((np.sum(valid), 4))
+            rgb = plt.get_cmap()(0)  # dummy to fetch colors
+            base_rgb = plt.matplotlib.colors.to_rgba(base_colors[i])
+            rgba[:, :3] = base_rgb[:3]
+            rgba[:, 3] = alphas[valid]
+
+            sc = ax.scatter(
+                centroid[valid, 0],
+                centroid[valid, 1],
+                color=rgba,
+                s=15,
+                label=f"Animal {i+1}",
+            )
+
+            # Connect with a thin line for readability
+            ax.plot(
+                centroid[valid, 0],
+                centroid[valid, 1],
+                lw=1.2,
+                alpha=0.5,
+                color=base_colors[i],
+            )
+
+        ax.set_title(titles[j])
+        ax.set_xlabel("X position (px)")
+        ax.set_ylabel("Y position (px)")
+        ax.invert_yaxis()
+        ax.set_xlim(0, 680)
+        ax.set_ylim(0, 230)
+        ax.legend()
+
+    if title:
+        fig.suptitle(title, fontsize=12, y=0.98)
+
+    # lets' just save od 
+
+    plt.tight_layout()
+
+    # lets save to disk instead of showing
+    fname_out = fname_csv.replace('.csv', '.png')
+    fig.savefig(fname_out, dpi=150)
+
+    plt.close(fig)
+
+
+# ------------------------------
+# 4️⃣  Plotting utilities
+# ------------------------------
+def plot_trajectory(animal_id, ax, centroid, title=None, cmap="viridis"):
+    """
+    Plot XY trajectory of one animal, colored by time.
+    """
+    frames = np.arange(len(centroid))
+    valid = ~np.isnan(centroid[:, 0])
+
+    sc = ax.scatter(centroid[valid, 0],
+                    centroid[valid, 1],
+                    c=frames[valid],
+                    cmap=cmap,
+                    s=20,
+                    alpha=0.9,
+                    label=f"Animal {animal_id}")
+    ax.plot(centroid[valid, 0],
+            centroid[valid, 1],
+            alpha=0.4, lw=1, color="gray")
+
+    ax.set_xlabel("X position (px)")
+    ax.set_ylabel("Y position (px)")
+    ax.invert_yaxis()
+    if title:
+        ax.set_title(title)
+    ax.legend()
+
+    cbar = plt.colorbar(sc, ax=ax)
+    cbar.set_label("Frame index (time)")
+    ax.set_ylim(0, 230)
+    ax.set_xlim(0, 680)
+
 
 #
 def load_times(fname,
