@@ -6,24 +6,25 @@ from utils import make_video, process_cams, get_ramdisk_dir
 #############################################
 #############################################
 input_dir = "/home/cat/Downloads/data_stitching/cams/"
-input_dir = '/mnt/data/netholabs/'
+input_dir = '/mnt/data2/netholabs/'
 output_dir = "/mnt/ssd/"
 
 
 ###### INSERT DATES OF VIDEOS #######
+###### INSERT DATES OF VIDEOS #######
 dates = [                              # date of the video
-        "2025_08_28",
-        "2025_08_29",
-        "2025_08_30",
-        "2025_08_31",
-        "2025_09_01",
-        "2025_09_02",
-        "2025_09_03",
-        ]
+    "2025_09_17",
+    "2025_09_18",
+    "2025_09_19",
+    "2025_09_20",
+    "2025_09_21"
+]
+
 
 ##### PARAMS OF DATA SETS #######
 hour_start = 0                                     # start at midnight
-minutes = np.arange(hour_start*60, 24*60)  # which minutes of the day to process
+minutes_default = np.arange(hour_start*60, 24*60)  # which minutes of the day to process
+first_day_hour_start = 20
 
 #
 shrink_factor = 10
@@ -45,12 +46,21 @@ ram_disk_dir = get_ramdisk_dir()
 # loop over all dates provided
 for date in dates:
 
+    #
+    if date == dates[0]:
+        minutes = np.arange(first_day_hour_start*60, 24*60)
+    else:
+        minutes = minutes_default
+
     # outer loop gooin over every minue of time 
     for minute in minutes:
 
         #
         hour_start = str(minute // 60).zfill(2)
         minute = minute % 60
+        
+        #
+        print ("... hour: ", hour_start, " ... minute: ", minute)
 
         # save the combined frame as a video file
         fname_combined = os.path.join(output_dir,
