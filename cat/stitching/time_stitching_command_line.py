@@ -5,26 +5,23 @@ from utils import make_video, process_cams, get_ramdisk_dir
 #############################################
 #############################################
 #############################################
-input_dir = "/home/cat/Downloads/data_stitching/cams/"
-input_dir = '/mnt/data2/netholabs/'
-output_dir = "/mnt/ssd/"
+input_dir = '/mnt/data/netholabs/'
+output_dir = "/mnt/ssd/avis_pre_auto_stitching/"
 
 
-###### INSERT DATES OF VIDEOS #######
-###### INSERT DATES OF VIDEOS #######
-dates = [                              # date of the video
-    "2025_09_17",
-    "2025_09_18",
-    "2025_09_19",
-    "2025_09_20",
-    "2025_09_21"
-]
+###### GRAB DATES OF VIDEOS #######
+def load_dates_from_file(filepath):
+    with open(filepath, "r") as f:
+        dates = [line.strip() for line in f if line.strip()]
+    return dates
 
+# Example usage:
+dates = load_dates_from_file("/mnt/data/netholabs/dates.txt")
 
 ##### PARAMS OF DATA SETS #######
 hour_start = 0                                     # start at midnight
 minutes_default = np.arange(hour_start*60, 24*60)  # which minutes of the day to process
-first_day_hour_start = 20
+first_day_hour_start = 21
 
 #
 shrink_factor = 10
