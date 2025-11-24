@@ -451,38 +451,40 @@ def decompress_video(minute,
             if verbose:
                 print ("...  advancing video  frames #: ", frames_already_written)
             # TODO: fill in video with last frame - so we load it
-            while ctr_bin != times_relative_to_min_start[ctr_frame]:
-                # we write on frame to stack and advance 10 ms
-                log_frame_write("CURRENT_MINUTE_CLEAN",
-                                frames_written_clean,
-                                ctr_bin,
-                                "no-fill-advance-index",
-                                blank_frame,
-                                ts_target=times_relative_to_min_start[ctr_frame])
-                # i don't think we need to write the blank frame to the file; we just need to move the index forward
-                #f.write(blank_frame.tobytes())
-                frames_written_clean += 1
-                ctr_bin += inter_frame_interval
-                # print ("ctr_bin: ",ctr_bin)
-                # print ("ctr_frame: ", ctr_frame)
-                # print ("times_relative to min start: ", times_relative_to_min_start[ctr_frame])
-                # don't increment the video frame coutner; 
-                # we're just trying to catch up to it with the blank frames
+            if ctr_frame < len(times_relative_to_min_start):
+                while ctr_bin != times_relative_to_min_start[ctr_frame]:
+                    # we write on frame to stack and advance 10 ms
+                    log_frame_write("CURRENT_MINUTE_CLEAN",
+                                    frames_written_clean,
+                                    ctr_bin,
+                                    "no-fill-advance-index",
+                                    blank_frame,
+                                    ts_target=times_relative_to_min_start[ctr_frame])
+                    # i don't think we need to write the blank frame to the file; we just need to move the index forward
+                    #f.write(blank_frame.tobytes())
+                    frames_written_clean += 1
+                    ctr_bin += inter_frame_interval
+                    # print ("ctr_bin: ",ctr_bin)
+                    # print ("ctr_frame: ", ctr_frame)
+                    # print ("times_relative to min start: ", times_relative_to_min_start[ctr_frame])
+                    # don't increment the video frame coutner; 
+                    # we're just trying to catch up to it with the blank frames
 
 
         # this is required for the case where the recording starts mid-minute
-        while ctr_bin < times_relative_to_min_start[ctr_frame]:
-            # we need to write a blank frames until we reach the first frame time in the current minute
-            log_frame_write("CURRENT_MINUTE_CLEAN",
-                            frames_written_clean,
-                            ctr_bin,
-                            "inserting blank frame to advance index",
-                            blank_frame,
-                            ts_target=times_relative_to_min_start[ctr_frame])
-            f.write(blank_frame.tobytes())
-            frames_written_clean += 1
-            ctr_bin += inter_frame_interval  # increment the bin counter
-            # increment the bin counter
+        if ctr_frame < len(times_relative_to_min_start):
+            while ctr_bin < times_relative_to_min_start[ctr_frame]:
+                # we need to write a blank frames until we reach the first frame time in the current minute
+                log_frame_write("CURRENT_MINUTE_CLEAN",
+                                frames_written_clean,
+                                ctr_bin,
+                                "inserting blank frame to advance index",
+                                blank_frame,
+                                ts_target=times_relative_to_min_start[ctr_frame])
+                f.write(blank_frame.tobytes())
+                frames_written_clean += 1
+                ctr_bin += inter_frame_interval  # increment the bin counter
+                # increment the bin counter
 
         # placehodler in case there's an error on the first frame
         prev_frame = blank_frame.copy()
@@ -509,18 +511,22 @@ def decompress_video(minute,
             # this is required for the case where there is a frame time gap in the recording
             # we jsut write the previuos frame
             # so here we're comparing the current bin index with expected bin index for the current frame
-            while ctr_bin < times_relative_to_min_start[ctr_frame]:
-                # we need to write a blank frames until we reach the first frame time in the current minute
-                log_frame_write("CURRENT_MINUTE_CLEAN",
-                                frames_written_clean,
-                                ctr_bin,
-                                "mid_recording_duplicate_frame - advance index",
-                                prev_frame,
-                                ts_target=times_relative_to_min_start[ctr_frame])
-                f.write(blank_frame.tobytes())
-                frames_written_clean += 1
-                ctr_bin += inter_frame_interval  # increment the bin counter
-                # increment the bin counter
+            if ctr_frame < len(times_relative_to_min_start):
+                while ctr_bin < times_relative_to_min_start[ctr_frame]:
+                    # we need to write a blank frames until we reach the first frame time in the current minute
+                    log_frame_write("CURRENT_MINUTE_CLEAN",
+                                    frames_written_clean,
+                                    ctr_bin,
+                                    "mid_recording_duplicate_frame - advance index",
+                                    prev_frame,
+                                    ts_target=times_relative_to_min_start[ctr_frame])
+                    f.write(blank_frame.tobytes())
+                    frames_written_clean += 1
+                    ctr_bin += inter_frame_interval  # increment the bin counter
+                    # increment the bin counter
+            else:
+                # No more frames in times_relative_to_min_start, break out of loop
+                break
 
 
             # write the frame to the binary file
@@ -530,7 +536,7 @@ def decompress_video(minute,
             # check to makes sure next value is different:
             # we only write frames that are unique
             # don't generallyneed to check if we have more ctr_frame than 
-            if (ctr_frame+1)<=times_relative_to_min_start.shape[0]:
+            if (ctr_frame+1) < times_relative_to_min_start.shape[0]:
                 if times_relative_to_min_start[ctr_frame]!=times_relative_to_min_start[ctr_frame+1]:
                     log_frame_write("CURRENT_MINUTE_CLEAN",
                                     frames_written_clean,
@@ -545,6 +551,10 @@ def decompress_video(minute,
 
             #
             ctr_frame += 1
+            
+            # Check if we've exhausted all frames in times_relative_to_min_start
+            if ctr_frame >= len(times_relative_to_min_start):
+                break
 
             # we also replace the blank frame now with the last read frame
             prev_frame = frame.copy()
@@ -610,6 +620,8 @@ def decompress_video(minute,
 
             # 
             #print ("ctr_bin", ctr_bin, ", ctr_frame: ", ctr_frame, times_relative_to_min_start[ctr_frame])
+            if ctr_frame >= len(times_relative_to_min_start):
+                break
             while ctr_bin != times_relative_to_min_start[ctr_frame]:
                 # we need to write a blank frame
                 log_frame_write("NEXT_MINUTE_TEMP",
@@ -624,7 +636,7 @@ def decompress_video(minute,
                 # increment the bin counter
 
             #
-            if (ctr_frame+1)<=(times_relative_to_min_start.shape[0]-1):
+            if (ctr_frame+1) < times_relative_to_min_start.shape[0]:
                 if times_relative_to_min_start[ctr_frame]!=times_relative_to_min_start[ctr_frame+1]:
                     log_frame_write("NEXT_MINUTE_TEMP",
                                     frames_written_next_temp,
