@@ -111,6 +111,8 @@ def file_not_found(fname_root,
                     shrink_factor,
                     ram_disk_dir,
                     resolution,
+                    frame_rate,
+                    duration,
                     verbose=False
                 ):
     
@@ -183,6 +185,8 @@ def decompress_cams(cam,
 
     frame_rate = config['frame_rate']
     print ("frame rate: ", frame_rate)
+    
+    cage_id = config['cage_id']
 
     inter_frame_interval = 1000 // frame_rate  # in milliseconds
 
@@ -217,6 +221,8 @@ def decompress_cams(cam,
                        shrink_factor,
                        ram_disk_dir,
                        resolution,
+                       frame_rate,
+                       duration,
                        verbose=verbose)
         return
 

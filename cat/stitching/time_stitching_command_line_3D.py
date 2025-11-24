@@ -11,8 +11,8 @@ output_dir = "/home/cat/Downloads/3D_Vids_to_be_stiched/9_12/"
 input_dir = '/home/cat/Downloads/Cage 1 Staging/Cage 1 Cameras/'
 output_dir = '/home/cat/Downloads/Cage 1 Staging/Cage 1 Cameras/'
 
-input_dir = "/home/cat/Downloads/newdata2/"
-output_dir = "/home/cat/Downloads/newdata2/"
+input_dir = "/home/cat/temp/temp2/"
+output_dir = input_dir
 # input_dir = "/home/cat/Downloads/3D_Vids_to_be_stiched/25_28/"
 # output_dir = "/home/cat/Downloads/3D_Vids_to_be_stiched/25_28/"
 
@@ -27,8 +27,8 @@ print ("Dates to process: ", dates)
 ##### PARAMS OF DATA SETS #######
 hour_start = 0                                     # start at midnight
 minutes_default = np.arange(hour_start*60, 24*60)  # which minutes of the day to process
-first_day_hour_start = 14
-first_day_minute_start = 25
+first_day_hour_start = 19
+first_day_minute_start = 00
 
 #
 shrink_factor = 1
@@ -44,7 +44,7 @@ n_cores = 8
 delete_bins_flag = False
 build_video_only = False
 use_ramdisk = False
-flip_vertical_flag = True
+flip_vertical_flag = False
 
 
 # first make ramdisk dir
