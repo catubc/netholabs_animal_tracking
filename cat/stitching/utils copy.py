@@ -9,15 +9,16 @@ import parmap
 from datetime import datetime, timezone, timedelta
 
 #
-def load_times(
-                fname,
-                inter_frame_interval,
-                minute):
-
+def load_times(fname,
+               minute):
     data = np.load(fname, allow_pickle=True)
+    #print (data.files)
     frame_times_ms = data['frame_times']//1000
+    #print (frame_times_ms)
     recording_start_time = data['recording_start_time']
+    #print ("recording start time: ", recording_start_time)
     encoder_start = data['encoder_start']
+    #print ("encoder start: ", encoder_start)
 
     ###############################################
     # convert july 24, 2025  exacdtly midngith to milisecond in epoch systm eimte clock but make sure its' UTC+1 london time
@@ -29,7 +30,7 @@ def load_times(
     #print("time srelative to midnight (in ms): ", delta_times)
 
     # now convert into bucket discrete time
-    time_stamps_binned = frame_times_ms // inter_frame_interval * inter_frame_interval # convert to millseconds and round to 10ms bin
+    time_stamps_binned = frame_times_ms // 10 * 10 # convert to millseconds and round to 10ms bin
     #print("time relative to midnight in 10ms buckets: ", delta_times_bucket)
 
     # and convert into a discrete bin of 10ms from midnight
@@ -104,59 +105,6 @@ def get_ramdisk_dir_non_memory(subdir="ramdisk"):
     return path
 
 
-def file_not_found(fname_root,
-                    cam,
-                    minute,
-                    hour_start,
-                    shrink_factor,
-                    ram_disk_dir,
-                    resolution,
-                    verbose=False
-                ):
-    
-    #
-    if verbose:
-        print ('... no files found for camera: ', cam, " minute: ", minute)
-        print ("looking for files matching: ", fname_root)
-        print ('')
-
-    # --- FIX STARTS HERE ---
-    # If no video for the current minute, check if there’s a temp file for this minute
-    temp_path = os.path.join(
-        ram_disk_dir,
-        f"{cam}_shrink_{shrink_factor}_hour_{hour_start}_minute_{minute}_temp.bin"
-    )
-    clean_path = os.path.join(
-        ram_disk_dir,
-        f"{cam}_shrink_{shrink_factor}_hour_{hour_start}_minute_{minute}_clean.bin"
-    )
-
-    if os.path.exists(temp_path):
-        shutil.move(temp_path, clean_path)
-
-    # we also need to pad this file so it has 6000 frames
-    if os.path.exists(clean_path):
-        if verbose:
-            print ("... padding existing clean file to full 6000 frames: ", clean_path)
-        frame_height = resolution[1] // shrink_factor
-        frame_width = resolution[0] // shrink_factor
-        channels = 3
-        frame_size_bytes = frame_height * frame_width * channels
-        total_frames = frame_rate * duration  # 6000 frames for 1 minute at 100 fps
-        current_size = os.path.getsize(clean_path)
-        current_frames = current_size // frame_size_bytes
-        frames_to_add = total_frames - current_frames
-
-        if frames_to_add > 0:
-            blank_frame = np.zeros((frame_height, frame_width, channels), dtype=np.uint8)
-            with open(clean_path, 'ab') as f:
-                for _ in range(frames_to_add):
-                    f.write(blank_frame.tobytes())
-            if verbose:
-                print (f"... added {frames_to_add} blank frames to {clean_path}")
-
-    return 
-
 # 
 def decompress_cams(cam,
                     root_dir,
@@ -184,8 +132,6 @@ def decompress_cams(cam,
     frame_rate = config['frame_rate']
     print ("frame rate: ", frame_rate)
 
-    inter_frame_interval = 1000 // frame_rate  # in milliseconds
-
     duration = config['duration']
     print ("duration: ", duration)
 
@@ -210,16 +156,47 @@ def decompress_cams(cam,
     # if the camera has files we then need to load the frame times
     #######################################################
     if len(fnames)==0:
-        file_not_found(fname_root,
-                        cam,
-                       minute,
-                       hour_start,
-                       shrink_factor,
-                       ram_disk_dir,
-                       resolution,
-                       verbose=verbose)
-        return
+        if verbose:
+            print ('... no files found for camera: ', cam, " minute: ", minute)
+            print ("looking for files matching: ", fname_root)
+            print ('')
 
+        # --- FIX STARTS HERE ---
+        # If no video for the current minute, check if there’s a temp file for this minute
+        temp_path = os.path.join(
+            ram_disk_dir,
+            f"{cam}_shrink_{shrink_factor}_hour_{hour_start}_minute_{minute}_temp.bin"
+        )
+        clean_path = os.path.join(
+            ram_disk_dir,
+            f"{cam}_shrink_{shrink_factor}_hour_{hour_start}_minute_{minute}_clean.bin"
+        )
+
+        if os.path.exists(temp_path):
+            shutil.move(temp_path, clean_path)
+
+        # we also need to pad this file so it has 6000 frames
+        if os.path.exists(clean_path):
+            if verbose:
+                print ("... padding existing clean file to full 6000 frames: ", clean_path)
+            frame_height = resolution[1] // shrink_factor
+            frame_width = resolution[0] // shrink_factor
+            channels = 3
+            frame_size_bytes = frame_height * frame_width * channels
+            total_frames = frame_rate * duration  # 6000 frames for 1 minute at 100 fps
+            current_size = os.path.getsize(clean_path)
+            current_frames = current_size // frame_size_bytes
+            frames_to_add = total_frames - current_frames
+
+            if frames_to_add > 0:
+                blank_frame = np.zeros((frame_height, frame_width, channels), dtype=np.uint8)
+                with open(clean_path, 'ab') as f:
+                    for _ in range(frames_to_add):
+                        f.write(blank_frame.tobytes())
+                if verbose:
+                    print (f"... added {frames_to_add} blank frames to {clean_path}")
+
+        return 
 
     #######################################################
     ############### CONVERT TIME STAMPS ####################
@@ -228,15 +205,13 @@ def decompress_cams(cam,
         print ("minute:", minute, " cam:", cam ) #, " files:", fnames)
 
     # load the time stamps for this camera
-    time_stamps_binned = load_times(fnames[0],
-                                    inter_frame_interval,
-                                    minute)
+    time_stamps_binned = load_times(fnames[0], minute)
     if verbose:
         print ("time stamps binned: ", time_stamps_binned)
 
     # Convert to UTC+1 using timezone offset
     dt_naive = datetime.strptime(f"{date.replace('_', '-')} {hour_start}:{minute:02d}", "%Y-%m-%d %H:%M")
-    dt_utc1 = dt_naive.replace(tzinfo=timezone(timedelta(hours=0)))  # UTC+1
+    dt_utc1 = dt_naive.replace(tzinfo=timezone(timedelta(hours=1)))  # UTC+1
 
     # Get absolute time in nanoseconds
     timestamp_ns = int(dt_utc1.timestamp() * 1_000_000_000)
@@ -244,7 +219,6 @@ def decompress_cams(cam,
     # Truncate to milliseconds
     unix_time_to_start_of_minute = timestamp_ns // 1_000_000
     if verbose:
-        print ("date: ", date, " hour_start: ", hour_start, " minute: ", minute)
         print("absolute unix time (ms, UTC+1) to start of minute:", unix_time_to_start_of_minute)
 
     #################################################
@@ -293,7 +267,7 @@ def decompress_video(minute,
         Not clear yet if we should just save to disk, but probably,
     '''
 
-    verbose = True
+    #verbose = True
     # use opencv to load video
     # and save the png files with the filenmae of 
     
@@ -342,10 +316,9 @@ def decompress_video(minute,
         return
 
     # shrink based on the shrink factor
-    # we want to get nerestine
     if shrink_factor > 1:
-        frame_height = int(round(frame_height / shrink_factor))
-        frame_width  = int(round(frame_width  / shrink_factor))
+        frame_height //= shrink_factor
+        frame_width  //= shrink_factor
         if verbose:
             print ("shrinking video frames to: ", frame_height, "x", frame_width)
     
@@ -353,31 +326,9 @@ def decompress_video(minute,
     frame_size_bytes = frame_height * frame_width * channels
     blank_frame = np.zeros((frame_height, frame_width, channels), dtype=np.uint8)
 
-    # helper util for verbose debugging of frame writes
-    def log_frame_write(target_label,
-                        frame_idx,
-                        ctr_bin_val,
-                        frame_kind,
-                        frame_obj,
-                        ts_target=None):
-        if not verbose:
-            return
-        if frame_obj is None:
-            shape = (frame_height, frame_width, channels)
-            nbytes = frame_size_bytes
-        else:
-            shape = frame_obj.shape
-            nbytes = frame_obj.nbytes
-        msg = (f"[{target_label}] frame_idx={frame_idx} ctr_bin_ms={ctr_bin_val} "
-               f"type={frame_kind} shape={shape} bytes={nbytes}")
-        if ts_target is not None:
-            msg += f" target_timestamp_ms={ts_target}"
-        print(msg)
-
     # we offset the loaded time steps to the start of the current minute
     # so we can then use a 6000 bin fixed size video structure 
     times_relative_to_min_start = time_stamps_binned - unix_time_to_start_of_minute
-    # 
     if verbose:
         print ("time stamps relative to start of minute: ", times_relative_to_min_start)
         print (" total frames: ", len(times_relative_to_min_start), 
@@ -397,10 +348,9 @@ def decompress_video(minute,
             print ("... found temp video file for current minute: ", 
                    fname_video_current_minute_clean)
         file_size = os.path.getsize(fname_video_current_minute_temp)
-        frames_already_written = file_size / frame_size_bytes
+        frames_already_written = file_size // frame_size_bytes
         if verbose:
             print(f"File already exists: {frames_already_written} frames found.")
-        frames_already_written = int(frames_already_written)
 
         # let's make a copy of the temp file to the current minute
         # we can now append to the fname_current_minute as required - and 
@@ -412,7 +362,7 @@ def decompress_video(minute,
             print("File does not exist yet.")
 
     # need to check that if there is a full video in place already then we can exit safely
-    if frames_already_written >= (frame_rate * duration):
+    if frames_already_written >= 6000:
         if verbose:
             print ("... this minute of data already fully decompressed, exiting ...")
             print (" --- THIS CASE SHOULDNT HAPPNE... to check...")
@@ -432,36 +382,24 @@ def decompress_video(minute,
 
     #
     ctr_frame = 0
-    # this should index by the inter frame interval in milliseconds not fixed 10 ms
-    ctr_bin = frames_already_written*inter_frame_interval
+    ctr_bin = frames_already_written*10
     n_frames_read = 0
     n_unique_frames_written = 0
 
     # ok so we now work only on the current_minute_temp
     # until we have a clean exit - in which case we overwrite the clean file
     with open(fname_video_current_minute_temp, 'ab') as f:
-        frames_written_clean = frames_already_written
         
-        ##################### ADvance INDEX ######################
-        # if video already advance index
+        ##################### FILL EXISTING VIDEO WITH BLANKS ######################
+        # if video already in place need to then fill the gap between the previous video ended
         #  and current one; usually about 3-5 seconds of duration during file upload to the server
-        # but we shoudln't overwrite the existing video with blank frames; just need to move the index forward
-        # so we need to check if the current frame time is greater than the previous frame time
         if frames_already_written > 0:
             if verbose:
-                print ("...  advancing video  frames #: ", frames_already_written)
+                print ("...  filling up preexisting video with blank frames #: ", frames_already_written)
             # TODO: fill in video with last frame - so we load it
             while ctr_bin != times_relative_to_min_start[ctr_frame]:
                 # we write on frame to stack and advance 10 ms
-                log_frame_write("CURRENT_MINUTE_CLEAN",
-                                frames_written_clean,
-                                ctr_bin,
-                                "no-fill-advance-index",
-                                blank_frame,
-                                ts_target=times_relative_to_min_start[ctr_frame])
-                # i don't think we need to write the blank frame to the file; we just need to move the index forward
-                #f.write(blank_frame.tobytes())
-                frames_written_clean += 1
+                f.write(blank_frame.tobytes())
                 ctr_bin += inter_frame_interval
                 # print ("ctr_bin: ",ctr_bin)
                 # print ("ctr_frame: ", ctr_frame)
@@ -469,32 +407,21 @@ def decompress_video(minute,
                 # don't increment the video frame coutner; 
                 # we're just trying to catch up to it with the blank frames
 
-
-        # this is required for the case where the recording starts mid-minute
-        while ctr_bin < times_relative_to_min_start[ctr_frame]:
-            # we need to write a blank frames until we reach the first frame time in the current minute
-            log_frame_write("CURRENT_MINUTE_CLEAN",
-                            frames_written_clean,
-                            ctr_bin,
-                            "inserting blank frame to advance index",
-                            blank_frame,
-                            ts_target=times_relative_to_min_start[ctr_frame])
-            f.write(blank_frame.tobytes())
-            frames_written_clean += 1
-            ctr_bin += inter_frame_interval  # increment the bin counter
-            # increment the bin counter
-
-        # placehodler in case there's an error on the first frame
-        prev_frame = blank_frame.copy()
-
         ####################################################################
         ##################### LOOP OVER 60 sec VIDEO  ######################
         ####################################################################
         while ctr_bin < duration * 1000:  # 60000 ms = 60 seconds
-        # lets use 
             ret, frame = cap.read()
             if not ret:
                 break
+
+            # let's print size of the frame
+            #print ("frame shape: ", frame.shape, " frame size: ", frame.size, " bytes: ", frame.nbytes)
+
+            #return
+
+            #if ctr_bin%5000==0:
+            #    print ("processing frame: ", ctr_bin, " / ", 60000, " frames written: ", n_frames_written)
 
             # we subsample/shrink frame based on shrink factor
             if shrink_factor > 1:
@@ -505,23 +432,12 @@ def decompress_video(minute,
                     #
                     frame = cv2.resize(frame, (frame_width, frame_height), interpolation=cv2.INTER_LINEAR)
 
-
-            # this is required for the case where there is a frame time gap in the recording
-            # we jsut write the previuos frame
-            # so here we're comparing the current bin index with expected bin index for the current frame
+            # 
             while ctr_bin < times_relative_to_min_start[ctr_frame]:
-                # we need to write a blank frames until we reach the first frame time in the current minute
-                log_frame_write("CURRENT_MINUTE_CLEAN",
-                                frames_written_clean,
-                                ctr_bin,
-                                "mid_recording_duplicate_frame - advance index",
-                                prev_frame,
-                                ts_target=times_relative_to_min_start[ctr_frame])
+                # we need to write a blank frame
                 f.write(blank_frame.tobytes())
-                frames_written_clean += 1
                 ctr_bin += inter_frame_interval  # increment the bin counter
                 # increment the bin counter
-
 
             # write the frame to the binary file
             #print ("ctr_bin", ctr_bin, ", ctr_frame: ", ctr_frame, times_relative_to_min_start[ctr_frame])
@@ -532,14 +448,7 @@ def decompress_video(minute,
             # don't generallyneed to check if we have more ctr_frame than 
             if (ctr_frame+1)<=times_relative_to_min_start.shape[0]:
                 if times_relative_to_min_start[ctr_frame]!=times_relative_to_min_start[ctr_frame+1]:
-                    log_frame_write("CURRENT_MINUTE_CLEAN",
-                                    frames_written_clean,
-                                    ctr_bin,
-                                    "real_frame",
-                                    frame,
-                                    ts_target=times_relative_to_min_start[ctr_frame])
                     f.write(frame.tobytes())
-                    frames_written_clean += 1
                     ctr_bin += inter_frame_interval
                     n_unique_frames_written += 1
 
@@ -547,10 +456,7 @@ def decompress_video(minute,
             ctr_frame += 1
 
             # we also replace the blank frame now with the last read frame
-            prev_frame = frame.copy()
-
-            #
-            #prev_frame = frame.copy()
+            blank_frame = frame.copy()
 
     # TODO: Need an extra step to indicate clean exit;
     # so we'll need to rename the _temp file to _clean.bin or something like this
@@ -576,8 +482,6 @@ def decompress_video(minute,
     if verbose:
         print ("writing second minute frames starting at: ", times_relative_to_min_start[:5])
 
-    #return 
-
        # write the rest of the frames to the next vid
     ctr_bin = 0 
     n_frames_read = 0
@@ -587,7 +491,6 @@ def decompress_video(minute,
     # Step 2: Open in append mode ('ab' = append binary)
     # we only ever write to a _temp file here; it will be converted to a clean file on the next cycle
     with open(fname_video_next_minute_temp, 'wb') as f:
-        frames_written_next_temp = 0
 
         #
         while ctr_bin < duration*1000:
@@ -612,28 +515,14 @@ def decompress_video(minute,
             #print ("ctr_bin", ctr_bin, ", ctr_frame: ", ctr_frame, times_relative_to_min_start[ctr_frame])
             while ctr_bin != times_relative_to_min_start[ctr_frame]:
                 # we need to write a blank frame
-                log_frame_write("NEXT_MINUTE_TEMP",
-                                frames_written_next_temp,
-                                ctr_bin,
-                                "blank_gap_fill",
-                                blank_frame,
-                                ts_target=times_relative_to_min_start[ctr_frame])
                 f.write(blank_frame.tobytes())
-                frames_written_next_temp += 1
-                ctr_bin += inter_frame_interval  # increment the bin counter
+                ctr_bin += 10  # increment the bin counter
                 # increment the bin counter
 
             #
             if (ctr_frame+1)<=(times_relative_to_min_start.shape[0]-1):
                 if times_relative_to_min_start[ctr_frame]!=times_relative_to_min_start[ctr_frame+1]:
-                    log_frame_write("NEXT_MINUTE_TEMP",
-                                    frames_written_next_temp,
-                                    ctr_bin,
-                                    "real_frame",
-                                    frame,
-                                    ts_target=times_relative_to_min_start[ctr_frame])
                     f.write(frame.tobytes())
-                    frames_written_next_temp += 1
                     ctr_bin += inter_frame_interval
                     n_unique_frames_written += 1
 
@@ -671,11 +560,6 @@ def get_video_size(nrows,
                    ncols,
                    rows,
                    crops):
-
-    print ("crop table: ", crops)
-    print ("rows: ", rows)
-    print ("ncols: ", ncols)
-    print ("nrows: ", nrows)
     
     ''' get the final video size based on the crop table and the rows/cols of cameras '''
     # compute row widths and col heights
@@ -758,14 +642,12 @@ def delete_bins(ram_disk_dir,
 
 #
 def make_video(config,
-               flip_vertical_flag,
                root_dir,
                ram_disk_dir,
                date,
                 minute,
                 hour_start,
                 n_cams,
-                cam_ids,
                 fname_combined,
                 shrink_factor=1,
                 frame_subsample=1,
@@ -798,19 +680,11 @@ def make_video(config,
 
     # cage 3 layout - 4 cams
     elif n_cams == 4:
-        
-        # grab the cam_ids for the 4 cams
-        # and insert them in this 2 x 2 pattern
         rows = np.array([
-            [cam_ids[0], cam_ids[1]],
-            [cam_ids[2], cam_ids[3]]
+            [4, 2],
+            [3, 1]
         ])
         nrows, ncols = 2, 2
-
-        rows_idx = np.array([
-            [4, 3],
-            [2, 1]
-        ])
 
     # load translation table
     fname_crop_table ="crop_table_cage_"+str(cage_id)+".yaml"
@@ -823,7 +697,7 @@ def make_video(config,
     # ok need to figure out the fully frame size based on these crops and the rows that they will be appended above
     vid_width, vid_height = get_video_size(nrows, 
                                            ncols,
-                                           rows_idx,
+                                           rows,
                                            crops)
     
     print ("final video size before shrink: ", vid_width, "x", vid_height)
@@ -840,23 +714,15 @@ def make_video(config,
     frame_width = resolution[0]       # pixels
     channels = 3               # RGB
     if shrink_factor > 1:
-        # need to divide by shrink factor for both height and width but round to nearest integer not floor
-        frame_height = int(frame_height / shrink_factor+0.5)
-        frame_width = int(frame_width / shrink_factor+0.5)
+        frame_height //= shrink_factor
+        frame_width  //= shrink_factor
         #print ("shrinking video frames to: ", frame_height, "x", frame_width)
 
     # make a blank default image
     frame_blank = np.zeros((frame_height, frame_width, channels), dtype=np.uint8)
-    print ("frame blank shape: ", frame_blank.shape)
-    frame_size_bytes = frame_height * frame_width * channels  # 1280 * 768 * 3 = 2,359,296 bytes
-
-
-    # we should make the final video size a multiple of the frame size -
-    # we don't crop so much for 3D vids
-    full_vid_height = frame_height * nrows
-    full_vid_width = frame_width * ncols
 
     #
+    frame_size_bytes = frame_height * frame_width * channels  # 1280 * 768 * 3 = 2,359,296 bytes
 
     if os.path.exists(fname_combined) and overwrite_existing==False:
         #print ("... combined video file already exists: ", fname_combined)
@@ -870,23 +736,9 @@ def make_video(config,
                           fourcc, 
                           30.0, 
                           #
-                          (full_vid_width, full_vid_height)
+                          (vid_width, vid_height)
                           #(frame_width * ncols, frame_height * nrows)
                           )
-
-    # 
-    print ("final video size after shrink: ", full_vid_width, "x", full_vid_height)
-
-    # ... hour:  16  ... minute:  17
-    # Final video size: 4056 x 3040
-    # final video size before shrink:  4056 x 3040
-    # frame blank shape:  (152, 202, 3)
-    # final video size after shrink:  404 x 304
-
-    # seems based on input the width and ehigh mighb be swtiched? 
-    # so we need to swap the width and height
-    #full_vid_width, full_vid_height = full_vid_height, full_vid_width
-
 
     # we actually want to grab freeze frames from non-recorded cameras - so we don't reinitialize this
     for i in trange(0,frame_rate * duration, 
@@ -896,14 +748,12 @@ def make_video(config,
 
     
         # loop over cameras and grab a frame from each
-        for ctr_cam, cam in enumerate(cam_ids):
+        for cam in range(n_cams,0,-1):
             # find the filename for this camera and bin
             fname_frame = os.path.join(ram_disk_dir,
                                     str(cam) + "_shrink_" + str(shrink_factor) +
                                     "_hour_" + hour_start + "_minute_"+
                                     str(minute) + "_clean.bin")
-            #
-            #print ("fname_frame: ", fname_frame)
             
             #
             if os.path.exists(fname_frame):
@@ -916,17 +766,10 @@ def make_video(config,
                     if len(frame_data) != frame_size_bytes:
                         # leave the previous frame in place
                         continue
-                    
-                    
-                   # frame = np.frombuffer(frame_data, 
-                   #                         dtype=np.uint8).reshape((frame_height, 
-                   #                                                 frame_width, 
-                   #                                                 channels))
+                    frame = np.frombuffer(frame_data, dtype=np.uint8).reshape((frame_height, frame_width, channels))
 
-                    #
-                 
                     try:
-                        frame = np.frombuffer(frame_data, dtype=np.uint8).reshape((frame_height, 
+                        frame = np.frombuffer(frame, dtype=np.uint8).reshape((frame_height, 
                                                                           frame_width, 
                                                                           channels))
                     except:
@@ -937,14 +780,8 @@ def make_video(config,
                         # print ("cam: ", cam)
                         # print ("fname: ", fname_frame)
                         # print ("frame_size_bytes: ", frame_size_bytes)
-            
             else:
                 frame = frame_blank.copy()
-            
-            #
-            # if ctr_cam == 1:
-            #         print ("frame shape: ", frame.shape)
-
 
             #
             #print ("frame shape: ", frame.shape)
@@ -952,7 +789,40 @@ def make_video(config,
             result = np.where(rows == cam)
             #print ("result", result)
             row_index = result[0][0] 
+            #print ("row: ", row_index)
 
+            # we want to save each of these frames as png for offling analysis
+            if False:
+            #if i in frame_ids_align:
+                fname_out = os.path.join(root_dir, "frames",
+                                        "align_frame_" + str(minute).zfill(2) + "_" + str(i).zfill(4) +
+                                        "_cam" + str(cam) + ".png")
+                cv2.imwrite(fname_out, frame)
+
+            # let's now index into the frame based on the crop-table
+            # first grab the camera specific crop
+            # this is how the data is stored: cam1: [100,1280,0,720]
+            crop = crops[f"cam{cam}"]
+            x1, x2, y1, y2 = crop
+            # shrink the coords by the required amountd
+            x1 //= shrink_factor
+            x2 //= shrink_factor
+            y1 //= shrink_factor
+            y2 //= shrink_factor
+            #print ('frame', frame.shape, " crop: ", x1, y1, x2, y2)
+            
+            # if y1 is > 0 then we need to just
+            if y1>0:
+                # we need to grab the frame and do a roll and fill with blanks
+                frame = np.roll(frame, y1, axis=0)
+                frame[:y1,:,:] = 0
+                frame = frame[:, x1:x2]
+            else:
+                frame = frame[y1:y2, x1:x2]
+            #print ("final frame shape: ", frame.shape)
+            # 
+        
+            #
             frame_all_cams_rows[row_index].append(frame)
 
 
@@ -969,9 +839,14 @@ def make_video(config,
                 print ("row image shape: ", row_images[k].shape)
             print ("... error vstacking row images ...")
 
-        if flip_vertical_flag:
-            frame_all_cams_blank = np.flipud(frame_all_cams_blank)
-       
+        #return
+        # print ("frame all cams shape: ", frame_all_cams_blank.shape)
+
+        #return
+
+        #print ("frame all cams shape: ", frame_all_cams_blank.shape)
+        #return
+        
         # now write the combined frame to the video file
         out.write(frame_all_cams_blank)
 
